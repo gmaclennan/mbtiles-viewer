@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <meta name="theme-color" content="#eef2ff" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>MBTiles Viewer</title>
+  </head>
+  <body
+    class="bg-indigo-50 flex flex-col items-center justify-center h-dvh overscroll-none overflow-hidden"
+  >
+    <!-- Header -->
+    <h1 class="text-4xl font-bold text-teal-700">MBTiles Viewer</h1>
+    <p class="text-lg text-gray-700 mt-2">View MBTiles files in the browser</p>
+    <input
+      id="file-input"
+      type="file"
+      disabled
+      class="hidden"
+      accept=".db,.mbtiles,.sqlite,.sqlite3"
+    />
+    <!-- Button -->
+    <button
+      id="open-button"
+      class="mt-8 px-6 h-12 bg-blue-500 text-white font-semibold text-lg rounded-lg shadow-md hover:bg-blue-600 hover:shadow-lg transition-all duration-200 ease-in-out cursor-pointer hidden"
+      disabled
+    >
+      Open MBTiles
+    </button>
+
+    <div id="spinner" class="mt-8 h-12">
+      <svg
+        class="animate-spin h-8 w-8 text-blue-500"
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <circle
+          class="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          stroke-width="4"
+        ></circle>
+        <path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+        ></path>
+      </svg>
+    </div>
+    <div id="map" class="h-full hidden !absolute w-full top-0 bg-white"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

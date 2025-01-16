@@ -93,7 +93,12 @@ pEvent<"message", MessageEvent<any>>(
   (event) => event.data.type === "metadata"
 ).then(async ({ data: { payload: metadata } }) => {
   const map = await mapPromise;
-  map.addControl(new NavigationControl(), "top-right");
+  map.addControl(
+    new NavigationControl({
+      showCompass: false,
+    }),
+    "top-right"
+  );
   map.addControl(
     new CloseControl(() => {
       window.location.reload();
@@ -155,6 +160,9 @@ const mapPromise = pEvent(window, "load")
       center: [0, 0],
       style,
       zoom: 2,
+      attributionControl: false,
+      dragRotate: false,
+      dragPan: false,
     });
   });
 

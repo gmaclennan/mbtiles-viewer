@@ -25,3 +25,4 @@ dist-ssr
 
 .wrangler
 *.mbtiles
+!e2e/fixtures/*.mbtiles

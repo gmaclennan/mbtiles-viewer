@@ -7,17 +7,21 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler pages deploy dist"
+    "deploy": "npm run build && wrangler pages deploy dist",
+    "test:e2e": "vite build && vitest run",
+    "test:e2e:install": "npx playwright install chromium firefox"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.16",
     "@vite-pwa/assets-generator": "^1.0.2",
     "@vitejs/plugin-basic-ssl": "^2.1.0",
+    "playwright": "^1.58.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
     "vite": "^7.1.12",
     "vite-plugin-pwa": "^1.1.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.45.4"
   },
   "dependencies": {

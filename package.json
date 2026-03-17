@@ -21,11 +21,9 @@
     "wrangler": "^4.45.4"
   },
   "dependencies": {
-    "@mapbox/sphericalmercator": "^2.0.2",
-    "@mapbox/tiletype": "^0.3.1",
-    "@sqlite.org/sqlite-wasm": "^3.47.0-build1",
     "filter-obj": "^6.1.0",
     "maplibre-gl": "^5.11.0",
+    "mbtiles-reader": "^2.0.1",
     "p-defer": "^4.0.1",
     "p-event": "^7.0.0"
   }

@@ -1,43 +1,37 @@
 /// <reference lib="webworker" />
 
+import { MBTiles } from "mbtiles-reader";
 import { pEvent } from "p-event";
-import sqlite3InitModule, { type OpfsDatabase } from "@sqlite.org/sqlite-wasm";
-import { validate } from "./schema.ts";
 
 const MBTILES_FILENAME = "tiles.mbtiles";
-let cleanup = async () => {};
-let db: OpfsDatabase | undefined;
+let mbtiles: MBTiles | undefined;
 
 // Request access to the OPFS
 const rootPromise = navigator.storage.getDirectory().then(async (root) => {
-  cleanup = () => root.removeEntry(MBTILES_FILENAME).catch(() => {});
   // Cleanup on startup, in case last run did not clean up.
-  await cleanup();
+  await root.removeEntry(MBTILES_FILENAME).catch(() => {});
   return root;
 });
 
-const dbPromise = pEvent<string, MessageEvent<any>>(
+const mbtilesPromise = pEvent<string, MessageEvent<any>>(
   self,
   "message",
-  (event) => event.data.type === "file"
+  (event) => event.data.type === "file",
 ).then(async ({ data }) => {
-  const sqlite3 = await sqlite3InitModule();
   const file = data.payload as File;
   await copyFileToOpfs(file, MBTILES_FILENAME);
-  const db = new sqlite3.oo1.OpfsDb(MBTILES_FILENAME, "r");
+  const mbtiles = await MBTiles.open(MBTILES_FILENAME);
 
-  console.log("Running SQLite3 version", sqlite3.version.libVersion);
+  postMessage({ type: "metadata", payload: mbtiles.metadata });
 
-  const metadata = validate(db);
-  postMessage({ type: "metadata", payload: metadata });
-
-  return db;
+  return mbtiles;
 });
 
 addEventListener("message", async (event) => {
   switch (event.data.type) {
     case "beforeunload":
-      cleanup();
+      mbtiles?.close();
+      (await rootPromise).removeEntry(MBTILES_FILENAME).catch(() => {});
       return;
     case "tileRequest":
       await handleTileRequest(event.data);
@@ -60,52 +54,29 @@ async function handleTileRequest({
   ) {
     throw new TypeError("Invalid Message");
   }
-  const yTMS = (1 << z) - 1 - y;
-  db = db ?? (await dbPromise);
-
-  const stmt = db
-    .prepare(
-      `SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?`
-    )
-    .bind([z, x, yTMS]);
-
-  let tileData: Uint8Array | null | undefined;
+  mbtiles = mbtiles ?? (await mbtilesPromise);
 
   try {
-    if (stmt.step()) {
-      tileData = stmt.get(0) as Uint8Array | null;
-    }
-  } finally {
-    stmt.finalize();
-  }
+    const tile = mbtiles.getTile({ z, x, y });
+    const isGzipped = tile.data[0] === 0x1f && tile.data[1] === 0x8b;
+    const payload = isGzipped
+      ? await gunzip(tile.data.buffer as ArrayBuffer)
+      : (tile.data.buffer as ArrayBuffer);
 
-  if (!tileData) {
+    postMessage({ id, payload }, { transfer: [payload] });
+  } catch {
     postMessage({ id, error: "Tile not found" });
-    return;
   }
-  const isGzipped = tileData[0] === 0x1f && tileData[1] === 0x8b;
-  const payload = isGzipped ? await gunzip(tileData.buffer) : tileData.buffer;
-
-  postMessage({ id, payload }, { transfer: [payload] });
 }
 
 async function gunzip(inputBuffer: ArrayBuffer): Promise<ArrayBuffer> {
-  // Create a DecompressionStream instance for gzip
   const decompressionStream = new DecompressionStream("gzip");
-
-  // Convert the input ArrayBuffer to a ReadableStream
   const inputStream = new Response(inputBuffer)
     .body as ReadableStream<Uint8Array>;
-
-  // Pipe the input stream through the decompression stream
-  const decompressedStream = inputStream.pipeThrough(decompressionStream);
-
-  // Read the decompressed stream into a new ArrayBuffer
-  const decompressedArrayBuffer = await new Response(
-    decompressedStream
-  ).arrayBuffer();
-
-  return decompressedArrayBuffer;
+  const decompressedStream = inputStream.pipeThrough(
+    decompressionStream as any,
+  );
+  return new Response(decompressedStream).arrayBuffer();
 }
 
 async function copyFileToOpfs(file: File, name: string) {

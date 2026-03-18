@@ -9,11 +9,14 @@ import {
   type StyleSpecification,
 } from "maplibre-gl";
 import { layerStyles } from "./layer-styles.ts";
-// @ts-expect-error
-import { registerSW } from "virtual:pwa-register";
 
-// Reload page when service worker updates
-registerSW({ immediate: true });
+// Register service worker for PWA + streaming downloads
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register(
+    import.meta.env.MODE === "production" ? "/sw.js" : "/dev-sw.js?dev-sw",
+    { type: import.meta.env.MODE === "production" ? "classic" : "module" },
+  );
+}
 
 // PWA Install Guidance
 const isStandalone =
@@ -189,6 +192,10 @@ pEvent<"message", MessageEvent<any>>(
     "top-right"
   );
   map.addControl(
+    new SaveControl({ fileName: metadata.fileName }),
+    "top-right"
+  );
+  map.addControl(
     new CloseControl(() => {
       window.location.reload();
     }),
@@ -256,6 +263,51 @@ const mapPromise = pEvent(window, "load")
     });
   });
 
+// --- Streaming download ---
+// Creates a MessageChannel whose ports connect the web worker directly to the
+// service worker. Data flows worker → MessagePort → SW → browser download,
+// without passing through the main thread. Based on the pattern from
+// native-file-system-adapter by jimmywarting.
+
+/** Start SMP generation in the worker, streaming result to a download */
+async function startSmpDownload(fileName: string) {
+  const sw = await navigator.serviceWorker?.getRegistration();
+  if (!sw?.active) {
+    throw new Error("Service worker not available for download");
+  }
+
+  const channel = new MessageChannel();
+  // port1 → service worker (readable side)
+  // port2 → web worker (writable side, uses MessagePortSink with backpressure)
+
+  const encodedName = encodeURIComponent(fileName)
+    .replace(/['()]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())
+    .replace(/\*/g, "%2A");
+
+  const headers = {
+    "content-disposition": "attachment; filename*=UTF-8''" + encodedName,
+    "content-type": "application/octet-stream; charset=utf-8",
+  };
+
+  // Send readable port to the SW so it can respond to a fetch with the stream
+  sw.active.postMessage(
+    { url: sw.scope + encodedName, headers, readablePort: channel.port1 },
+    [channel.port1],
+  );
+
+  // Send writable port to the worker so it can pipe SMP chunks directly to SW
+  worker.postMessage(
+    { type: "generateSmp", port: channel.port2 },
+    [channel.port2],
+  );
+
+  // Trigger the download with a hidden iframe
+  const iframe = document.createElement("iframe");
+  iframe.hidden = true;
+  iframe.src = sw.scope + encodedName;
+  document.body.appendChild(iframe);
+}
+
 class CloseControl implements IControl {
   #container: HTMLDivElement | undefined;
   #onClick: (ev: MouseEvent) => void;
@@ -269,9 +321,47 @@ class CloseControl implements IControl {
     const button = document.createElement("button");
     button.className = "maplibregl-ctrl-icon";
     button.title = "Close";
-    button.textContent = "✖️";
+    button.textContent = "\u2716\uFE0F";
     button.onclick = this.#onClick;
     this.#container.appendChild(button);
+    return this.#container;
+  }
+
+  onRemove() {
+    this.#container?.parentNode?.removeChild(this.#container);
+  }
+}
+
+class SaveControl implements IControl {
+  #container: HTMLDivElement | undefined;
+  #fileName: string;
+
+  constructor({ fileName }: { fileName: string }) {
+    this.#fileName = fileName;
+  }
+
+  onAdd() {
+    this.#container = document.createElement("div");
+    this.#container.className = "maplibregl-ctrl maplibregl-ctrl-group";
+    const btn = document.createElement("button");
+    btn.id = "download-smp";
+    btn.className =
+      "maplibregl-ctrl-icon block w-[29px] h-[29px] cursor-pointer border-0 bg-transparent p-0";
+    btn.title = "Download as SMP";
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-[19px] h-[19px] m-[5px]"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const smpFileName =
+          this.#fileName.replace(/\.[^.]+$/, "") + ".smp";
+        await startSmpDownload(smpFileName);
+      } catch (err) {
+        console.error("SMP download failed:", err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    this.#container.appendChild(btn);
     return this.#container;
   }
 

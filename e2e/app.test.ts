@@ -2,6 +2,7 @@ import path from "path";
 import {
   chromium,
   firefox,
+  webkit,
   type Browser,
   type BrowserType,
   type Page,
@@ -16,9 +17,28 @@ const chromiumArgs =
     ? ["--use-gl=angle", "--use-angle=metal"]
     : ["--use-gl=angle", "--use-angle=swiftshader"];
 
+/** Open an mbtiles file and wait for the map to render */
+async function openMbtilesFile(page: Page) {
+  await page.goto(baseUrl);
+  await page.locator("#open-button").waitFor({ state: "visible" });
+
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator("#open-button").click(),
+  ]);
+  await fileChooser.setFiles(fixturePath);
+
+  const map = page.locator("#map");
+  await map.waitFor({ state: "visible", timeout: 30_000 });
+
+  const canvas = map.locator("canvas");
+  await canvas.waitFor({ state: "attached", timeout: 10_000 });
+}
+
 function appTests(
   browserType: BrowserType,
   launchOptions?: Record<string, unknown>,
+  opts?: { skipDownloadTest?: boolean },
 ) {
   let browser: Browser;
   let page: Page;
@@ -116,24 +136,45 @@ function appTests(
   });
 
   test("can open and view an mbtiles file", async () => {
-    await page.goto(baseUrl);
-    await page.locator("#open-button").waitFor({ state: "visible" });
-
-    // Click button and handle file chooser
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.locator("#open-button").click(),
-    ]);
-    await fileChooser.setFiles(fixturePath);
-
-    // Wait for map to become visible (sourcedata event fires after tiles load)
-    const map = page.locator("#map");
-    await map.waitFor({ state: "visible", timeout: 30_000 });
-
-    // Verify MapLibre has rendered a canvas
-    const canvas = map.locator("canvas");
-    await canvas.waitFor({ state: "attached", timeout: 10_000 });
+    await openMbtilesFile(page);
+    const canvas = page.locator("#map canvas");
     expect(await canvas.count()).toBeGreaterThan(0);
+  });
+
+  const testDownload = opts?.skipDownloadTest ? test.skip : test;
+  testDownload("can download mbtiles as smp file", async () => {
+    await openMbtilesFile(page);
+
+    const downloadBtn = page.locator("#download-smp");
+    await downloadBtn.waitFor({ state: "visible", timeout: 10_000 });
+
+    // Remove showSaveFilePicker so the code uses the service worker streaming
+    // path (which triggers a download via Content-Disposition that Playwright
+    // can capture).
+    await page.evaluate(async () => {
+      delete (window as any).showSaveFilePicker;
+      // Ensure service worker is active before triggering download
+      await navigator.serviceWorker.ready;
+    });
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 60_000 }),
+      downloadBtn.click(),
+    ]);
+
+    expect(download.suggestedFilename()).toBe("plain_1.smp");
+
+    const readable = await download.createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of readable) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const fileContents = Buffer.concat(chunks);
+
+    // SMP files are zip archives — verify the zip magic number (PK\x03\x04)
+    expect(fileContents[0]).toBe(0x50); // P
+    expect(fileContents[1]).toBe(0x4b); // K
+    expect(fileContents.length).toBeGreaterThan(100);
   });
 }
 
@@ -145,5 +186,13 @@ describe("chromium", () => {
 
 const describeFirefox = process.env.CI ? describe.skip : describe;
 describeFirefox("firefox", () => {
-  appTests(firefox);
+  appTests(firefox, undefined, { skipDownloadTest: true });
+});
+
+// Playwright's WebKit uses ephemeral (non-persistent) browser contexts which
+// do not support OPFS. This app requires OPFS, so WebKit e2e tests are skipped.
+// OPFS works in real Safari — this is a Playwright limitation, not a Safari bug.
+// See: https://github.com/microsoft/playwright/issues/18235
+describe.skip("webkit", () => {
+  appTests(webkit);
 });

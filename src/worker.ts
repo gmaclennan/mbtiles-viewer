@@ -20,11 +20,14 @@ const mbtilesPromise = pEvent<string, MessageEvent<any>>(
 ).then(async ({ data }) => {
   const file = data.payload as File;
   await copyFileToOpfs(file, MBTILES_FILENAME);
-  const mbtiles = await MBTiles.open(MBTILES_FILENAME);
+  const instance = await MBTiles.open(MBTILES_FILENAME);
 
-  postMessage({ type: "metadata", payload: mbtiles.metadata });
+  postMessage({
+    type: "metadata",
+    payload: { ...instance.metadata, fileName: file.name },
+  });
 
-  return mbtiles;
+  return instance;
 });
 
 addEventListener("message", async (event) => {
@@ -36,8 +39,157 @@ addEventListener("message", async (event) => {
     case "tileRequest":
       await handleTileRequest(event.data);
       return;
+    case "generateSmp":
+      await handleGenerateSmp(event.data.port);
+      return;
   }
 });
+
+const WRITE = 0;
+const PULL = 0;
+const ERROR = 1;
+const ABORT = 1;
+const CLOSE = 2;
+
+async function handleGenerateSmp(port: MessagePort) {
+  try {
+    mbtiles = mbtiles ?? (await mbtilesPromise);
+    const stream = await createSmpStream(mbtiles);
+    const writable = new WritableStream(new MessagePortSink(port));
+    await stream.pipeTo(writable);
+  } catch (err) {
+    port.postMessage({ type: ABORT, reason: String(err) });
+    port.close();
+  }
+}
+
+/** WritableStream sink that sends chunks over a MessagePort with backpressure */
+class MessagePortSink implements UnderlyingSink<Uint8Array> {
+  #port: MessagePort;
+  #controller!: WritableStreamDefaultController;
+  #readyResolve!: () => void;
+  #readyReject!: (reason: any) => void;
+  #readyPromise!: Promise<void>;
+
+  constructor(port: MessagePort) {
+    this.#port = port;
+    port.onmessage = (event) => this.#onMessage(event.data);
+    this.#resetReady();
+  }
+
+  start(controller: WritableStreamDefaultController) {
+    this.#controller = controller;
+    return this.#readyPromise;
+  }
+
+  write(chunk: Uint8Array) {
+    this.#port.postMessage({ type: WRITE, chunk }, [chunk.buffer]);
+    this.#resetReady();
+    return this.#readyPromise;
+  }
+
+  close() {
+    this.#port.postMessage({ type: CLOSE });
+    this.#port.close();
+  }
+
+  abort(reason: any) {
+    this.#port.postMessage({ type: ABORT, reason: String(reason) });
+    this.#port.close();
+  }
+
+  #onMessage(message: { type: number; reason?: any }) {
+    if (message.type === PULL) this.#readyResolve();
+    if (message.type === ERROR) {
+      this.#controller.error(message.reason);
+      this.#readyReject(message.reason);
+      this.#port.close();
+    }
+  }
+
+  #resetReady() {
+    this.#readyPromise = new Promise((resolve, reject) => {
+      this.#readyResolve = resolve;
+      this.#readyReject = reject;
+    });
+  }
+}
+
+const SOURCE_ID = "mbtiles-source";
+
+async function createSmpStream(
+  reader: MBTiles,
+): Promise<ReadableStream<Uint8Array>> {
+  const { Writer } = await import("styled-map-package-api/writer");
+
+  const metadata = reader.metadata;
+
+  const style = {
+    version: 8,
+    name: metadata.name,
+    sources: {
+      [SOURCE_ID]: {
+        ...metadata,
+        type: metadata.format === "pbf" ? "vector" : "raster",
+        tileSize: metadata.format === "pbf" ? 512 : 256,
+      },
+    },
+    layers:
+      metadata.format === "pbf"
+        ? [
+            {
+              id: "background",
+              type: "background",
+              paint: { "background-color": "white" },
+            },
+          ]
+        : [
+            {
+              id: "background",
+              type: "background",
+              paint: { "background-color": "white" },
+            },
+            {
+              id: "raster",
+              type: "raster",
+              source: SOURCE_ID,
+              paint: { "raster-opacity": 1 },
+            },
+          ],
+  };
+
+  console.log(JSON.stringify(style, null, 2));
+
+  const writer = new Writer(style, { dedupe: true });
+
+  // Pipe tiles asynchronously — writer.outputStream is readable immediately
+  (async () => {
+    try {
+      const tileWriteStream = writer.createTileWriteStream();
+      const writable = tileWriteStream.getWriter();
+
+      for (const tile of reader) {
+        await writable.write([
+          tile.data,
+          {
+            z: tile.z,
+            x: tile.x,
+            y: tile.y,
+            format: tile.format,
+            sourceId: SOURCE_ID,
+          },
+        ]);
+      }
+
+      await writable.close();
+      await writer.finish();
+    } catch (err) {
+      writer.abort(err instanceof Error ? err : new Error(String(err)));
+    }
+  })();
+
+  return writer.outputStream;
+}
 
 async function handleTileRequest({
   payload: { z, x, y },

@@ -10,6 +10,16 @@ tiles are rendered with random colours, borrowing ideas from
 javascript and built with [vite](https://vite.dev). The website can be installed
 as a PWA on desktop and mobile and works offline.
 
+## SMP Export
+
+Once a map is loaded, click the download button (arrow icon, top-right) to
+export the MBTiles file as a
+[Styled Map Package](https://github.com/digidem/styled-map-package) (.smp)
+file. The SMP is generated in a web worker using
+[styled-map-package-api](https://github.com/digidem/styled-map-package) and
+streamed as a download via a service worker, so even large files don't need to
+be held entirely in memory.
+
 ## Caveats
 
 The MBTiles file is copied into

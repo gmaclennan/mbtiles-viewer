@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+@media (pointer: coarse) {
+  #drop-hint {
+    display: none !important;
+  }
+}
+
 @media (display-mode: standalone) {
   #install-guide {
     display: none !important;

@@ -56,16 +56,22 @@ function appTests(
     const overlay = page.locator("#drop-overlay");
     expect(await overlay.isVisible()).toBe(false);
 
-    // Simulate dragenter
-    await page.dispatchEvent("body", "dragenter", {
-      dataTransfer: {},
+    // Simulate dragenter using page.evaluate to construct a real DataTransfer
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      document.dispatchEvent(
+        new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }),
+      );
     });
     await overlay.waitFor({ state: "visible" });
     expect(await overlay.isVisible()).toBe(true);
 
     // Simulate dragleave
-    await page.dispatchEvent("body", "dragleave", {
-      dataTransfer: {},
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      document.dispatchEvent(
+        new DragEvent("dragleave", { dataTransfer: dt, bubbles: true }),
+      );
     });
     expect(await overlay.isVisible()).toBe(false);
   });

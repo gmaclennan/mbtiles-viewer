@@ -1,1 +1,7 @@
 @import "tailwindcss";
+
+@media (display-mode: standalone) {
+  #install-guide {
+    display: none !important;
+  }
+}

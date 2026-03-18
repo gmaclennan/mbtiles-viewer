@@ -18,6 +18,45 @@ if ("serviceWorker" in navigator) {
   );
 }
 
+// PWA Install Guidance
+const isStandalone =
+  window.matchMedia("(display-mode: standalone)").matches ||
+  ("standalone" in navigator && (navigator as any).standalone);
+
+if (!isStandalone) {
+  const installGuide = document.getElementById("install-guide");
+  const installButton = document.getElementById(
+    "install-button"
+  ) as HTMLButtonElement;
+  const installIos = document.getElementById("install-ios");
+
+  const isIos =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+    !(window as any).MSStream;
+
+  let deferredPrompt: any = null;
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installGuide?.classList.remove("hidden");
+    installButton?.classList.remove("hidden");
+  });
+
+  installButton?.addEventListener("click", async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    deferredPrompt = null;
+    installButton.classList.add("hidden");
+    installGuide?.classList.add("hidden");
+  });
+
+  if (isIos) {
+    installGuide?.classList.remove("hidden");
+    installIos?.classList.remove("hidden");
+  }
+}
+
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   type: "module",
 });
@@ -58,6 +97,8 @@ const api = new Api(worker);
 const input = document.getElementById("file-input") as HTMLInputElement;
 const button = document.getElementById("open-button") as HTMLButtonElement;
 const spinner = document.getElementById("spinner") as HTMLDivElement;
+const dropHint = document.getElementById("drop-hint") as HTMLParagraphElement;
+const dropOverlay = document.getElementById("drop-overlay") as HTMLDivElement;
 
 button?.addEventListener("click", async () => {
   input?.click();
@@ -66,8 +107,54 @@ button?.addEventListener("click", async () => {
 input?.addEventListener("change", async (e) => {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (!file) return;
+  openFile(file);
+});
+
+function openFile(file: File) {
   setInProgress(true);
   worker.postMessage({ type: "file", payload: file });
+}
+
+// Drag-and-drop support
+let dragCounter = 0;
+let mapVisible = false;
+
+document.addEventListener("dragenter", (e) => {
+  if (mapVisible) return;
+  e.preventDefault();
+  dragCounter++;
+  if (dragCounter === 1) {
+    dropOverlay?.classList.remove("hidden");
+  }
+});
+
+document.addEventListener("dragover", (e) => {
+  if (mapVisible) return;
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "copy";
+  }
+});
+
+document.addEventListener("dragleave", (e) => {
+  if (mapVisible) return;
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) {
+    dragCounter = 0;
+    dropOverlay?.classList.add("hidden");
+  }
+});
+
+document.addEventListener("drop", (e) => {
+  if (mapVisible) return;
+  e.preventDefault();
+  dragCounter = 0;
+  dropOverlay?.classList.add("hidden");
+  const file = e.dataTransfer?.files?.[0];
+  if (file) {
+    openFile(file);
+  }
 });
 
 setInProgress(false);
@@ -78,11 +165,13 @@ function setInProgress(inProgress: boolean) {
     button?.setAttribute("disabled", "true");
     spinner?.classList.remove("hidden");
     button?.classList.add("hidden");
+    dropHint?.classList.add("hidden");
   } else {
     input?.removeAttribute("disabled");
     spinner?.classList.add("hidden");
     button?.classList.remove("hidden");
     button?.removeAttribute("disabled");
+    dropHint?.classList.remove("hidden");
   }
 }
 
@@ -138,6 +227,7 @@ pEvent<"message", MessageEvent<any>>(
   map.fitBounds(metadata.bounds, { duration: 0 });
   map.on("sourcedata", () => {
     map.getContainer().classList.remove("hidden");
+    mapVisible = true;
   });
 });
 

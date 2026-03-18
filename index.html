@@ -35,6 +35,26 @@
       Open MBTiles
     </button>
 
+    <!-- Drop hint text -->
+    <p id="drop-hint" class="mt-4 text-sm text-gray-500 hidden">
+      <svg class="inline-block w-5 h-5 mr-1 -mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" transform="rotate(180 12 12)" />
+      </svg>
+      or drag &amp; drop a file here
+    </p>
+
+    <!-- Drop overlay -->
+    <div
+      id="drop-overlay"
+      class="hidden fixed inset-0 z-50 bg-indigo-100/80 flex flex-col items-center justify-center pointer-events-none transition-opacity duration-150"
+    >
+      <svg class="w-16 h-16 text-blue-500 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" transform="rotate(180 12 12)" />
+      </svg>
+      <p class="text-2xl font-semibold text-blue-600">Drop file to open</p>
+      <p class="text-sm text-gray-500 mt-1">.mbtiles, .sqlite, .db</p>
+    </div>
+
     <div id="spinner" class="mt-8 h-12">
       <svg
         class="animate-spin h-8 w-8 text-blue-500"
@@ -57,6 +77,29 @@
         ></path>
       </svg>
     </div>
+    <!-- PWA Install Guidance (hidden by default, shown via JS) -->
+    <div id="install-guide" class="hidden absolute bottom-0 pb-6 max-w-xs text-center">
+      <!-- Chromium install button (shown when beforeinstallprompt fires) -->
+      <button
+        id="install-button"
+        class="hidden px-5 py-2.5 bg-teal-600 text-white font-medium rounded-lg shadow-md hover:bg-teal-700 transition-colors duration-200 cursor-pointer"
+      >
+        Install App
+      </button>
+      <!-- iOS instructions (shown on iOS Safari) -->
+      <div id="install-ios" class="hidden text-sm text-gray-600 leading-relaxed">
+        <p>
+          To install, tap
+          <svg class="inline-block w-5 h-5 align-text-bottom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/>
+            <polyline points="16 6 12 2 8 6"/>
+            <line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+          then <strong>"Add to Home Screen"</strong>
+        </p>
+      </div>
+    </div>
+
     <div id="map" class="h-full hidden absolute! w-full top-0 bg-white"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

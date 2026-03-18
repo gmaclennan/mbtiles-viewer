@@ -15,6 +15,45 @@ import { registerSW } from "virtual:pwa-register";
 // Reload page when service worker updates
 registerSW({ immediate: true });
 
+// PWA Install Guidance
+const isStandalone =
+  window.matchMedia("(display-mode: standalone)").matches ||
+  ("standalone" in navigator && (navigator as any).standalone);
+
+if (!isStandalone) {
+  const installGuide = document.getElementById("install-guide");
+  const installButton = document.getElementById(
+    "install-button"
+  ) as HTMLButtonElement;
+  const installIos = document.getElementById("install-ios");
+
+  const isIos =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+    !(window as any).MSStream;
+
+  let deferredPrompt: any = null;
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installGuide?.classList.remove("hidden");
+    installButton?.classList.remove("hidden");
+  });
+
+  installButton?.addEventListener("click", async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    deferredPrompt = null;
+    installButton.classList.add("hidden");
+    installGuide?.classList.add("hidden");
+  });
+
+  if (isIos) {
+    installGuide?.classList.remove("hidden");
+    installIos?.classList.remove("hidden");
+  }
+}
+
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   type: "module",
 });

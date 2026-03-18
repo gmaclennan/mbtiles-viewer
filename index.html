@@ -57,6 +57,29 @@
         ></path>
       </svg>
     </div>
+    <!-- PWA Install Guidance (hidden by default, shown via JS) -->
+    <div id="install-guide" class="hidden mt-8 max-w-xs text-center">
+      <!-- Chromium install button (shown when beforeinstallprompt fires) -->
+      <button
+        id="install-button"
+        class="hidden px-5 py-2.5 bg-teal-600 text-white font-medium rounded-lg shadow-md hover:bg-teal-700 transition-colors duration-200 cursor-pointer"
+      >
+        Install App
+      </button>
+      <!-- iOS instructions (shown on iOS Safari) -->
+      <div id="install-ios" class="hidden text-sm text-gray-600 leading-relaxed">
+        <p>
+          To install, tap
+          <svg class="inline-block w-5 h-5 align-text-bottom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/>
+            <polyline points="16 6 12 2 8 6"/>
+            <line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+          then <strong>"Add to Home Screen"</strong>
+        </p>
+      </div>
+    </div>
+
     <div id="map" class="h-full hidden absolute! w-full top-0 bg-white"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

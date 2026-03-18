@@ -42,6 +42,79 @@ function appTests(
     expect(await button.isEnabled()).toBe(true);
   });
 
+  test("shows drag-and-drop hint text on load", async () => {
+    await page.goto(baseUrl);
+    const hint = page.locator("#drop-hint");
+    await hint.waitFor({ state: "visible" });
+    expect(await hint.textContent()).toContain("drag");
+  });
+
+  test("shows drop overlay on dragenter and hides on dragleave", async () => {
+    await page.goto(baseUrl);
+    await page.locator("#open-button").waitFor({ state: "visible" });
+
+    const overlay = page.locator("#drop-overlay");
+    expect(await overlay.isVisible()).toBe(false);
+
+    // Simulate dragenter using page.evaluate to construct a real DataTransfer
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      document.dispatchEvent(
+        new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }),
+      );
+    });
+    await overlay.waitFor({ state: "visible" });
+    expect(await overlay.isVisible()).toBe(true);
+
+    // Simulate dragleave
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      document.dispatchEvent(
+        new DragEvent("dragleave", { dataTransfer: dt, bubbles: true }),
+      );
+    });
+    expect(await overlay.isVisible()).toBe(false);
+  });
+
+  test("can open an mbtiles file via drag and drop", async () => {
+    await page.goto(baseUrl);
+    await page.locator("#open-button").waitFor({ state: "visible" });
+
+    // Read the fixture file and create a DataTransfer-like drop event
+    const buffer = await import("fs").then((fs) =>
+      fs.readFileSync(fixturePath),
+    );
+
+    // Use Playwright's page.evaluate to simulate a drop with a real File
+    await page.evaluate(
+      async ({ bytes, fileName }) => {
+        const uint8 = new Uint8Array(bytes);
+        const file = new File([uint8], fileName);
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+
+        // Dispatch dragenter first so the overlay shows
+        document.dispatchEvent(
+          new DragEvent("dragenter", { dataTransfer, bubbles: true }),
+        );
+        // Then dispatch drop
+        document.dispatchEvent(
+          new DragEvent("drop", { dataTransfer, bubbles: true }),
+        );
+      },
+      { bytes: Array.from(buffer), fileName: "plain_1.mbtiles" },
+    );
+
+    // Wait for map to become visible
+    const map = page.locator("#map");
+    await map.waitFor({ state: "visible", timeout: 30_000 });
+
+    // Verify MapLibre has rendered a canvas
+    const canvas = map.locator("canvas");
+    await canvas.waitFor({ state: "attached", timeout: 10_000 });
+    expect(await canvas.count()).toBeGreaterThan(0);
+  });
+
   test("can open and view an mbtiles file", async () => {
     await page.goto(baseUrl);
     await page.locator("#open-button").waitFor({ state: "visible" });

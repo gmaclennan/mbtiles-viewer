@@ -5,6 +5,9 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 1000,
   },
+  worker: {
+    format: "es",
+  },
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
@@ -22,7 +25,13 @@ export default defineConfig({
   },
   plugins: [
     VitePWA({
-      registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      injectRegister: false,
+      injectManifest: {
+        rollupFormat: "es",
+      },
       manifest: {
         name: "MBTiles Viewer",
         short_name: "MBTiles",

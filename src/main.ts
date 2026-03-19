@@ -269,43 +269,60 @@ const mapPromise = pEvent(window, "load")
 // without passing through the main thread. Based on the pattern from
 // native-file-system-adapter by jimmywarting.
 
+/** Wait for the worker to signal SMP generation is complete */
+function waitForSmpComplete(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handler = (event: MessageEvent) => {
+      if (event.data.type === "smpComplete") {
+        worker.removeEventListener("message", handler);
+        resolve();
+      } else if (event.data.type === "smpError") {
+        worker.removeEventListener("message", handler);
+        reject(new Error(event.data.error));
+      }
+    };
+    worker.addEventListener("message", handler);
+  });
+}
+
 /** Start SMP generation in the worker, streaming result to a download */
 async function startSmpDownload(fileName: string) {
+  const done = waitForSmpComplete();
+
   const sw = await navigator.serviceWorker?.getRegistration();
   if (!sw?.active) {
     throw new Error("Service worker not available for download");
   }
 
   const channel = new MessageChannel();
-  // port1 → service worker (readable side)
-  // port2 → web worker (writable side, uses MessagePortSink with backpressure)
-
   const encodedName = encodeURIComponent(fileName)
-    .replace(/['()]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())
+    .replace(
+      /['()]/g,
+      (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+    )
     .replace(/\*/g, "%2A");
 
   const headers = {
     "content-disposition": "attachment; filename*=UTF-8''" + encodedName,
-    "content-type": "application/octet-stream; charset=utf-8",
+    "content-type": "application/octet-stream",
   };
 
-  // Send readable port to the SW so it can respond to a fetch with the stream
   sw.active.postMessage(
     { url: sw.scope + encodedName, headers, readablePort: channel.port1 },
     [channel.port1],
   );
 
-  // Send writable port to the worker so it can pipe SMP chunks directly to SW
   worker.postMessage(
     { type: "generateSmp", port: channel.port2 },
     [channel.port2],
   );
 
-  // Trigger the download with a hidden iframe
   const iframe = document.createElement("iframe");
   iframe.hidden = true;
   iframe.src = sw.scope + encodedName;
   document.body.appendChild(iframe);
+
+  await done;
 }
 
 class CloseControl implements IControl {
@@ -348,9 +365,12 @@ class SaveControl implements IControl {
     btn.className =
       "maplibregl-ctrl-icon block w-[29px] h-[29px] cursor-pointer border-0 bg-transparent p-0";
     btn.title = "Download as SMP";
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-[19px] h-[19px] m-[5px]"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    const downloadIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-[19px] h-[19px] m-[5px]"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    const spinnerIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="w-[19px] h-[19px] m-[5px] animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+    btn.innerHTML = downloadIcon;
     btn.addEventListener("click", async () => {
       btn.disabled = true;
+      btn.innerHTML = spinnerIcon;
       try {
         const smpFileName =
           this.#fileName.replace(/\.[^.]+$/, "") + ".smp";
@@ -359,6 +379,7 @@ class SaveControl implements IControl {
         console.error("SMP download failed:", err);
       } finally {
         btn.disabled = false;
+        btn.innerHTML = downloadIcon;
       }
     });
     this.#container.appendChild(btn);

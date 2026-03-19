@@ -57,9 +57,11 @@ async function handleGenerateSmp(port: MessagePort) {
     const stream = await createSmpStream(mbtiles);
     const writable = new WritableStream(new MessagePortSink(port));
     await stream.pipeTo(writable);
+    postMessage({ type: "smpComplete" });
   } catch (err) {
     port.postMessage({ type: ABORT, reason: String(err) });
     port.close();
+    postMessage({ type: "smpError", error: String(err) });
   }
 }
 

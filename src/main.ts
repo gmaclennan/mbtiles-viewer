@@ -252,15 +252,17 @@ const mapPromise = pEvent(window, "load")
       "mbtiles",
       createProtocolHandler(api.getTile.bind(api))
     );
-    return new maplibre.Map({
+    const map = new maplibre.Map({
       container: "map",
       center: [0, 0],
       style,
       zoom: 2,
       attributionControl: false,
       dragRotate: false,
-      dragPan: false,
     });
+    // Expose for e2e tests
+    (window as any).maplibreMap = map;
+    return map;
   });
 
 // --- Streaming download ---

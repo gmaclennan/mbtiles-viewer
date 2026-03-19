@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler pages deploy dist",
-    "test:e2e": "vite build && vitest run",
+    "test": "vite build && vitest run",
     "test:e2e:install": "npx playwright install chromium firefox"
   },
   "devDependencies": {

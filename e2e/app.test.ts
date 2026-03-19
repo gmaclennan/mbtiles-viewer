@@ -141,6 +141,37 @@ function appTests(
     expect(await canvas.count()).toBeGreaterThan(0);
   });
 
+  test("can pan the map by dragging", async () => {
+    await openMbtilesFile(page);
+
+    const canvas = page.locator("#map canvas").first();
+    const box = await canvas.boundingBox();
+    expect(box).toBeTruthy();
+
+    // Get the initial map center
+    const centerBefore = await page.evaluate(
+      () => (window as any).maplibreMap?.getCenter(),
+    );
+
+    // Drag from center to the left
+    const startX = box!.x + box!.width / 2;
+    const startY = box!.y + box!.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX - 100, startY, { steps: 5 });
+    await page.mouse.up();
+
+    // Wait briefly for the map to update
+    await page.waitForTimeout(500);
+
+    const centerAfter = await page.evaluate(
+      () => (window as any).maplibreMap?.getCenter(),
+    );
+
+    // The longitude should have changed after dragging horizontally
+    expect(centerAfter.lng).not.toBeCloseTo(centerBefore.lng, 1);
+  });
+
   const testDownload = opts?.skipDownloadTest ? test.skip : test;
   testDownload("can download mbtiles as smp file", async () => {
     await openMbtilesFile(page);

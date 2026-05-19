@@ -1,13 +1,1411 @@
 @import "tailwindcss";
 
-@media (pointer: coarse) {
-  #drop-hint {
-    display: none !important;
+/* ── Reset / shell ───────────────────────────────────────────────── */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent;
+}
+body {
+  font-family: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  color: #29261b;
+}
+/* `height: 100vh` reaches the largest page area iOS Safari hands out
+ * (= 100lvh on current iOS versions, which is where chrome can be
+ * collapsed to). Going taller has no effect — iOS clamps the layout
+ * viewport regardless, and `viewport-fit=cover` doesn't extend the page
+ * behind the URL bar / toolbar in regular Safari. Edge-to-edge
+ * map-behind-chrome is achievable only via PWA mode (Add to Home Screen),
+ * where the chrome doesn't exist. */
+#app {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  /* Pre-tile-load backdrop so there's no white flash before tiles paint. */
+  background: #1a1d24;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* MapLibre's built-in chrome — hidden, we use our own controls */
+.maplibregl-ctrl-bottom-left,
+.maplibregl-ctrl-bottom-right,
+.maplibregl-ctrl-top-left,
+.maplibregl-ctrl-top-right {
+  display: none;
+}
+
+/* ── BboxMap ─────────────────────────────────────────────────────── */
+.map-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* Children of overlay re-enable pointer events as needed */
+.map-overlay > * {
+  pointer-events: auto;
+}
+
+.bbox-map-root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  user-select: none;
+}
+.bbox-map-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.bbox-map-canvas:active {
+  cursor: grabbing;
+}
+.bbox-map-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.bbox-dim {
+  position: absolute;
+  background: rgba(15, 18, 22, 0.45);
+  pointer-events: none;
+}
+.bbox-stroke {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* Handles: square chips at corners, narrow bars at sides. */
+.bbox-handle {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bbox-handle::before {
+  content: "";
+  display: block;
+  background: #fff;
+  box-shadow:
+    0 0 0 1.5px rgba(0, 0, 0, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  border-radius: 2px;
+}
+.bbox-handle-ne,
+.bbox-handle-nw,
+.bbox-handle-se,
+.bbox-handle-sw {
+  cursor: nwse-resize;
+}
+.bbox-handle-ne,
+.bbox-handle-sw {
+  cursor: nesw-resize;
+}
+.bbox-handle-n,
+.bbox-handle-s {
+  cursor: ns-resize;
+}
+.bbox-handle-e,
+.bbox-handle-w {
+  cursor: ew-resize;
+}
+.bbox-handle-n::before,
+.bbox-handle-s::before {
+  width: 28px;
+  height: 4px;
+}
+.bbox-handle-e::before,
+.bbox-handle-w::before {
+  width: 4px;
+  height: 28px;
+}
+.bbox-handle-ne::before,
+.bbox-handle-nw::before,
+.bbox-handle-se::before,
+.bbox-handle-sw::before {
+  width: 12px;
+  height: 12px;
+}
+
+/* ── Brand chip ──────────────────────────────────────────────────── */
+.va-brand {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: calc(16px + env(safe-area-inset-left));
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 4px 12px rgba(0, 0, 0, 0.06);
+  z-index: 5;
+}
+.va-brand-mark {
+  color: #1854f6;
+}
+
+/* ── Help button ─────────────────────────────────────────────────── */
+.help-root {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 10;
+}
+.help-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #444;
+}
+.help-btn-active {
+  color: #1854f6;
+}
+.help-popover-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+}
+.help-popover {
+  position: absolute;
+  top: calc(58px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
+  width: min(320px, calc(100% - 32px));
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.1),
+    0 16px 40px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  line-height: 1.5;
+  color: #333;
+}
+.help-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.help-popover-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.help-popover-close {
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  color: #999;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+.help-popover p {
+  margin: 0 0 10px;
+}
+.help-popover ol {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: #444;
+}
+.help-popover-tip {
+  font-size: 12px;
+  color: #888;
+  border-top: 1px solid #eee;
+  padding-top: 8px;
+  margin-top: 4px;
+}
+.help-popover-version {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: #aaa;
+  margin-top: 6px;
+}
+.help-popover-diag {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9px;
+  line-height: 1.35;
+  color: #888;
+  background: #f7f7f7;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Bottom action card (desktop) ────────────────────────────────── */
+.va-card {
+  position: absolute;
+  left: 50%;
+  /* Clear whichever is bigger: the home-indicator inset OR Safari's full
+   * chrome (measured by the vh/dvh delta — on iOS 26 this includes both the
+   * URL-bar pill AND the bottom toolbar row, since `vh` now tracks
+   * `window.outerHeight`). safe-area-inset-bottom alone misses both, which
+   * is why the card was landing behind chrome on a real device. */
+  bottom: calc(
+    24px + max(env(safe-area-inset-bottom), 100vh - 100dvh)
+  );
+  transform: translateX(-50%);
+  background: #fff;
+  border-radius: 14px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 12px 36px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100% - 32px);
+  z-index: 5;
+}
+.va-card-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 8px;
+  gap: 8px;
+}
+.va-style-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 8px;
+  border: none;
+  background: #f5f5f3;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: #222;
+  min-width: 240px;
+  text-align: left;
+}
+.va-style-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: block;
+  background: #ddd;
+}
+.va-style-text {
+  flex: 1;
+  overflow: hidden;
+}
+.va-style-label {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+.va-style-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.va-style-chev {
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+.va-download-btn {
+  padding: 12px 22px;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(24, 84, 246, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* Mobile card variant */
+@media (max-width: 640px) {
+  .va-card {
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(
+      12px + max(env(safe-area-inset-bottom), 100vh - 100dvh)
+    );
+    transform: none;
+    max-width: none;
+  }
+  .va-card-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .va-style-chip {
+    min-width: 0;
   }
 }
 
-@media (display-mode: standalone) {
-  #install-guide {
-    display: none !important;
+/* ── Bounds panel ───────────────────────────────────────────────── */
+.bounds-panel {
+  border-top: 1px solid #eee;
+}
+.bounds-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #888;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.bounds-chevron {
+  width: 9px;
+  height: 9px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+}
+.bounds-label {
+  flex-shrink: 0;
+}
+.bounds-summary {
+  flex: 1;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #999;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bounds-content {
+  padding: 14px 16px;
+  display: grid;
+}
+.bounds-grid {
+  display: grid;
+  /* W and E share the outer columns equally so they spread to opposite sides
+   * of the cross while N/S stay column-centered. */
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: auto auto auto;
+  row-gap: 6px;
+  column-gap: 8px;
+  align-items: center;
+  justify-items: center;
+}
+.bounds-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.bounds-field-label {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 700;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.bounds-input {
+  padding: 4px 6px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  width: 80px;
+  text-align: right;
+  box-sizing: border-box;
+  background: #fff;
+}
+.bounds-input:focus {
+  border-color: #1854f6;
+}
+.bounds-input-error {
+  border-color: #d23333 !important;
+  background: #fff5f5;
+}
+.bounds-readonly {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #444;
+  padding: 4px 6px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  background: #fafafa;
+  min-width: 72px;
+  text-align: right;
+  box-sizing: border-box;
+}
+/* W and E sit in 1fr columns so the cross spreads across the available width;
+ * give the empty middle column a touch of breathing room when the layout is
+ * tight (mobile cards). */
+.bounds-grid > div:empty {
+  min-width: 8px;
+}
+
+/* ── Style picker ───────────────────────────────────────────────── */
+.sp-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 22, 0.55);
+  backdrop-filter: blur(6px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+}
+.sp-backdrop.sp-mobile {
+  background: #fff;
+  backdrop-filter: none;
+}
+.sp-inner {
+  width: min(820px, 92%);
+  max-height: 92%;
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+}
+.sp-mobile .sp-inner {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  max-height: none;
+}
+.sp-header {
+  padding: 16px 20px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.sp-mobile .sp-header {
+  padding-top: calc(16px + env(safe-area-inset-top));
+}
+.sp-mobile .sp-body {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.sp-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+}
+/* Use a flex pill so the × glyph centres on the title's optical baseline,
+ * not the font's box. */
+.sp-close {
+  border: none;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+}
+.sp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid #eee;
+  overflow-x: auto;
+}
+.sp-tab {
+  border: none;
+  background: transparent;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  color: #888;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.sp-tab-active {
+  color: #000;
+  border-bottom-color: #1854f6;
+}
+.sp-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+.sp-mobile .sp-body {
+  padding: 16px 20px;
+}
+.sp-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.sp-preset-grid-mobile {
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.sp-preset-card {
+  text-align: left;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+  transition:
+    transform 0.12s,
+    border-color 0.12s;
+}
+.sp-preset-card:hover {
+  border-color: #ccc;
+}
+.sp-preset-active {
+  border: 2px solid #1854f6;
+}
+.sp-thumb {
+  width: 100%;
+  height: 110px;
+  position: relative;
+  overflow: hidden;
+}
+.sp-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.sp-preset-meta {
+  padding: 10px 12px 12px;
+}
+.sp-preset-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sp-preset-desc {
+  font-size: 12px;
+  color: #888;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.sp-preset-tag {
+  font-size: 10px;
+  color: #aaa;
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.sp-recent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.sp-recent-remove {
+  border: none;
+  background: transparent;
+  color: #aaa;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  font-family: inherit;
+}
+.sp-recent-remove:hover {
+  color: #d23333;
+}
+.sp-prose {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.6;
+  margin-top: 0;
+}
+.sp-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.sp-token-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #f7f9ff;
+  border: 1px solid #d9e1f8;
+  border-radius: 8px;
+}
+.sp-token-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sp-token-provider {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a3b8a;
+}
+.sp-token-param {
+  font-size: 11px;
+  color: #7f8aa8;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  padding: 1px 6px;
+  background: #eaeefd;
+  border-radius: 3px;
+}
+.sp-token-input {
+  padding: 10px 12px;
+  border: 1px solid #c8d3f0;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  background: #fff;
+}
+.sp-token-hint {
+  font-size: 11px;
+  color: #7f8aa8;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.sp-validate-btn {
+  margin-top: 14px;
+  padding: 10px 20px;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sp-btn-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sp-msg {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.sp-msg-ok {
+  background: #e8f5e8;
+  color: #1a6f1a;
+}
+.sp-msg-err {
+  background: #fce8e8;
+  color: #a02020;
+}
+.sp-mbtiles-drop {
+  border: 2px dashed #ccc;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  background: #fafafa;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.sp-mbtiles-drop-hot {
+  border-color: #1854f6;
+}
+.sp-mbtiles-drop-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+}
+.sp-mbtiles-drop-sub {
+  font-size: 13px;
+  color: #888;
+  margin-top: 6px;
+}
+.sp-mbtiles-btn {
+  width: 100%;
+  padding: 14px 18px;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ── Download modal ─────────────────────────────────────────────── */
+.dm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 22, 0.55);
+  backdrop-filter: blur(6px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+}
+.dm-mobile.dm-backdrop {
+  background: #fff;
+  backdrop-filter: none;
+  align-items: stretch;
+  justify-content: stretch;
+}
+.dm-inner {
+  width: min(720px, 92%);
+  max-height: 92%;
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+}
+.dm-header {
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dm-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.dm-subtitle {
+  font-size: 13px;
+  color: #777;
+  margin-top: 2px;
+}
+.dm-close {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  color: #888;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+}
+.dm-body {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.dm-preview-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 360px;
+  position: relative;
+  background: #222;
+}
+.dm-preview-host {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  background: #222;
+}
+.dm-preview-badges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.dm-preview-zoom {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.dm-preview-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  color: #444;
+  border-radius: 6px;
+  text-align: center;
+}
+.dm-form-col {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+.dm-label {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.dm-label-aux {
+  color: #aaa;
+  font-weight: 400;
+}
+.dm-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+.dm-input:focus {
+  border-color: #1854f6;
+}
+textarea.dm-input {
+  resize: vertical;
+  min-height: 56px;
+}
+.dm-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dm-zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dm-zoom-slider {
+  flex: 1;
+  accent-color: #1854f6;
+  cursor: pointer;
+}
+.dm-zoom-slider::-webkit-slider-thumb {
+  cursor: grab;
+}
+.dm-zoom-slider:active::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+.dm-zoom-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  width: 32px;
+  text-align: right;
+  font-size: 16px;
+}
+.dm-zoom-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+.dm-bounds-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 11px;
+  color: #888;
+  border-top: 1px solid #eee;
+}
+.dm-bounds-label {
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.dm-bounds-val {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #444;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm-estimate {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 0;
+  font-size: 13px;
+  color: #444;
+  border-top: 1px solid #eee;
+  border-bottom: 1px solid #eee;
+}
+.dm-estimate-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.dm-estimate-provisional {
+  color: #888;
+}
+.dm-warn {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.dm-warn-soft {
+  background: #fff5e0;
+  color: #7a4a00;
+  border: 1px solid #f0d99a;
+}
+.dm-warn-hard {
+  background: #fdecec;
+  color: #8a1a1a;
+  border: 1px solid #f0bcbc;
+}
+.dm-warn-icon {
+  font-size: 14px;
+  line-height: 1;
+  margin-top: 1px;
+}
+.dm-progress {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f5f7ff;
+  border: 1px solid #dde3ff;
+}
+.dm-progress-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #3a4a6a;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.dm-progress-pct {
+  font-variant-numeric: tabular-nums;
+}
+.dm-progress-track {
+  height: 6px;
+  background: #e0e6ff;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dm-progress-fill {
+  height: 100%;
+  background: #1854f6;
+  transition: width 0.25s;
+}
+.dm-success {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: #e6f7ec;
+  color: #1f6f3a;
+  border: 1px solid #b8e2c7;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.dm-primary {
+  width: 100%;
+  padding: 14px 20px;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: auto;
+}
+.dm-primary-disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+.dm-primary-error {
+  background: #c4302b;
+}
+.dm-primary-success {
+  background: #1f7f3a;
+}
+.dm-spin {
+  animation: dm-spin 0.9s linear infinite;
+}
+@keyframes dm-spin {
+  to {
+    transform: rotate(360deg);
   }
+}
+
+/* Mobile download modal */
+.dm-mobile-inner {
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+.dm-mobile-header {
+  padding: 14px 16px;
+  padding-top: calc(14px + env(safe-area-inset-top));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+}
+.dm-mobile-form {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.dm-mobile-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dm-mobile-back {
+  border: none;
+  background: transparent;
+  padding: 4px;
+  cursor: pointer;
+  color: #444;
+  display: flex;
+}
+.dm-mobile-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.dm-mobile-step {
+  font-size: 11px;
+  color: #888;
+  margin-top: 1px;
+}
+.dm-mobile-close {
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  color: #888;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+}
+.dm-mobile-progress {
+  height: 3px;
+  background: #f0f0f0;
+}
+.dm-mobile-progress-fill {
+  height: 100%;
+  background: #1854f6;
+  transition: width 0.25s;
+}
+.dm-mobile-form {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+.dm-mobile-primary-wrap {
+  margin-top: auto;
+}
+
+/* ── Drop overlay (dragging mbtiles file in) ────────────────────── */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(238, 242, 255, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.drop-overlay-icon {
+  width: 64px;
+  height: 64px;
+  color: #1854f6;
+  margin-bottom: 16px;
+}
+.drop-overlay-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #1854f6;
+}
+.drop-overlay-sub {
+  font-size: 14px;
+  color: #555;
+  margin-top: 4px;
+}
+
+/* ── PWA install banner ─────────────────────────────────────────── */
+/* Sits in the same slot as `.va-card` with a higher z-index so it eclipses
+ * the bottom controls on first visit — that's what makes the install
+ * affordance visible at all on iOS, where browsers don't surface one. */
+.install-banner {
+  position: absolute;
+  left: 50%;
+  bottom: calc(
+    24px + max(env(safe-area-inset-bottom), 100vh - 100dvh)
+  );
+  transform: translateX(-50%);
+  width: min(440px, calc(100% - 32px));
+  background: #1f2230;
+  color: #fff;
+  border-radius: 14px;
+  padding: 14px 14px 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.18),
+    0 12px 32px rgba(0, 0, 0, 0.32);
+  z-index: 7;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.install-banner-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cdd5ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.install-banner-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.install-banner-body {
+  flex: 1;
+  min-width: 0;
+}
+.install-banner-title {
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+.install-banner-text {
+  color: rgba(255, 255, 255, 0.78);
+}
+.install-banner-text b {
+  color: #fff;
+  font-weight: 600;
+}
+.install-banner-share {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+  color: #cdd5ff;
+}
+.install-banner-cta {
+  flex-shrink: 0;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.install-banner-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  align-self: flex-start;
+  font-family: inherit;
+}
+.install-banner-dismiss:hover {
+  color: #fff;
+}
+
+/* On phones the banner anchors to both edges, matching the mobile card. */
+@media (max-width: 640px) {
+  .install-banner {
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(
+      12px + max(env(safe-area-inset-bottom), 100vh - 100dvh)
+    );
+    width: auto;
+    transform: none;
+  }
+}
+
+/* ── Help popover install section ────────────────────────────────── */
+/* Lives inside the help popover so users who dismissed the bottom banner
+ * can still find the install affordance. */
+.help-install {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+.help-install-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.help-install p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #444;
+}
+.help-install-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+.help-install-btn {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ── PWA update banner ──────────────────────────────────────────── */
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(
+    16px + max(env(safe-area-inset-bottom), 100vh - 100dvh)
+  );
+  transform: translateX(-50%);
+  z-index: 300;
+  background: #1f2230;
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 8px 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.18),
+    0 12px 32px rgba(0, 0, 0, 0.28);
+  max-width: calc(100% - 32px);
+}
+.update-banner-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.update-banner-btn {
+  border: none;
+  background: #1854f6;
+  color: #fff;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.update-banner-dismiss {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
 }

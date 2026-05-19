@@ -4,7 +4,9 @@ declare let self: ServiceWorkerGlobalScope;
 
 precacheAndRoute(self.__WB_MANIFEST);
 
-self.addEventListener("install", () => self.skipWaiting());
+// New SWs sit in `waiting` state until the running tab acknowledges the
+// update via a SKIP_WAITING message (sent by `registerSW`'s `updateSW(true)`).
+// This lets us show a refresh banner instead of swapping caches mid-session.
 self.addEventListener("activate", (event) =>
   event.waitUntil(self.clients.claim()),
 );
@@ -62,6 +64,10 @@ const pending = new Map<
 
 self.addEventListener("message", (evt) => {
   const data = evt.data;
+  if (data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+    return;
+  }
   if (data.url && data.readablePort) {
     const rs = new ReadableStream(
       new MessagePortSource(data.readablePort),

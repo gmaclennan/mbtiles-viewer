@@ -17,22 +17,28 @@ const chromiumArgs =
     ? ["--use-gl=angle", "--use-angle=metal"]
     : ["--use-gl=angle", "--use-angle=swiftshader"];
 
-/** Open an mbtiles file and wait for the map to render */
-async function openMbtilesFile(page: Page) {
+/** Open the picker to the .mbtiles tab and load a fixture. */
+async function loadMbtilesFixture(page: Page) {
   await page.goto(baseUrl);
-  await page.locator("#open-button").waitFor({ state: "visible" });
+  await page.locator("#style-chip").waitFor({ state: "visible" });
+  await page.locator("#style-chip").click();
+  await page.locator('.sp-tab[data-tab="mbtiles"]').click();
 
+  const dropTarget = page.locator(".sp-mbtiles-drop, .sp-mbtiles-btn").first();
   const [fileChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.locator("#open-button").click(),
+    dropTarget.click(),
   ]);
   await fileChooser.setFiles(fixturePath);
 
-  const map = page.locator("#map");
-  await map.waitFor({ state: "visible", timeout: 30_000 });
-
-  const canvas = map.locator("canvas");
-  await canvas.waitFor({ state: "attached", timeout: 10_000 });
+  await page.waitForFunction(
+    (name) =>
+      document
+        .querySelector("#style-chip .va-style-name")
+        ?.textContent?.includes(name),
+    "plain_1.mbtiles",
+    { timeout: 30_000 },
+  );
 }
 
 function appTests(
@@ -44,10 +50,7 @@ function appTests(
   let page: Page;
 
   beforeAll(async () => {
-    browser = await browserType.launch({
-      headless: true,
-      ...launchOptions,
-    });
+    browser = await browserType.launch({ headless: true, ...launchOptions });
     page = await browser.newPage();
   });
 
@@ -55,145 +58,129 @@ function appTests(
     await browser?.close();
   });
 
-  test("shows the open button on load", async () => {
+  test("renders the map downloader UI on load", async () => {
     await page.goto(baseUrl);
-    const button = page.locator("#open-button");
-    await button.waitFor({ state: "visible" });
-    expect(await button.isEnabled()).toBe(true);
+    await page.locator("#style-chip").waitFor({ state: "visible" });
+    await page.locator("#download-button").waitFor({ state: "visible" });
+    await page.locator(".va-brand").waitFor({ state: "visible" });
+    expect(await page.locator(".bbox-handle").count()).toBe(8);
   });
 
-  test("shows drag-and-drop hint text on load", async () => {
+  test("style picker lists presets and closes on selection", async () => {
     await page.goto(baseUrl);
-    const hint = page.locator("#drop-hint");
-    await hint.waitFor({ state: "visible" });
-    expect(await hint.textContent()).toContain("drag");
+    await page.locator("#style-chip").waitFor({ state: "visible" });
+    await page.locator("#style-chip").click();
+    await page.locator(".sp-preset-card").first().waitFor({ state: "visible" });
+    expect(await page.locator(".sp-preset-card").count()).toBeGreaterThan(0);
+    await page.locator(".sp-close").click();
+    await page.locator(".sp-backdrop").waitFor({ state: "hidden" });
   });
 
-  test("shows drop overlay on dragenter and hides on dragleave", async () => {
+  test("bounds panel exposes the four cardinal inputs", async () => {
     await page.goto(baseUrl);
-    await page.locator("#open-button").waitFor({ state: "visible" });
-
-    const overlay = page.locator("#drop-overlay");
-    expect(await overlay.isVisible()).toBe(false);
-
-    // Simulate dragenter using page.evaluate to construct a real DataTransfer
-    await page.evaluate(() => {
-      const dt = new DataTransfer();
-      document.dispatchEvent(
-        new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }),
-      );
-    });
-    await overlay.waitFor({ state: "visible" });
-    expect(await overlay.isVisible()).toBe(true);
-
-    // Simulate dragleave
-    await page.evaluate(() => {
-      const dt = new DataTransfer();
-      document.dispatchEvent(
-        new DragEvent("dragleave", { dataTransfer: dt, bubbles: true }),
-      );
-    });
-    expect(await overlay.isVisible()).toBe(false);
+    await page.locator(".bounds-toggle").waitFor({ state: "visible" });
+    await page.locator(".bounds-toggle").click();
+    expect(await page.locator(".bounds-input").count()).toBe(4);
   });
 
-  test("can open an mbtiles file via drag and drop", async () => {
+  test("help popover opens and closes", async () => {
     await page.goto(baseUrl);
-    await page.locator("#open-button").waitFor({ state: "visible" });
+    await page.locator(".help-btn").waitFor({ state: "visible" });
+    await page.locator(".help-btn").click();
+    await page.locator(".help-popover").waitFor({ state: "visible" });
+    await page.locator(".help-popover-close").click();
+    await page.locator(".help-popover").waitFor({ state: "hidden" });
+  });
 
-    // Read the fixture file and create a DataTransfer-like drop event
+  test("opens an mbtiles file via the style picker", async () => {
+    await loadMbtilesFixture(page);
+    const canvas = page.locator("#map canvas").first();
+    expect(await canvas.count()).toBeGreaterThan(0);
+  });
+
+  test("opens an mbtiles file via drag and drop", async () => {
+    await page.goto(baseUrl);
+    await page.locator("#style-chip").waitFor({ state: "visible" });
+
     const buffer = await import("fs").then((fs) =>
       fs.readFileSync(fixturePath),
     );
-
-    // Use Playwright's page.evaluate to simulate a drop with a real File
     await page.evaluate(
       async ({ bytes, fileName }) => {
         const uint8 = new Uint8Array(bytes);
         const file = new File([uint8], fileName);
         const dataTransfer = new DataTransfer();
         dataTransfer.items.add(file);
-
-        // Dispatch dragenter first so the overlay shows
         document.dispatchEvent(
           new DragEvent("dragenter", { dataTransfer, bubbles: true }),
         );
-        // Then dispatch drop
         document.dispatchEvent(
           new DragEvent("drop", { dataTransfer, bubbles: true }),
         );
       },
       { bytes: Array.from(buffer), fileName: "plain_1.mbtiles" },
     );
-
-    // Wait for map to become visible
-    const map = page.locator("#map");
-    await map.waitFor({ state: "visible", timeout: 30_000 });
-
-    // Verify MapLibre has rendered a canvas
-    const canvas = map.locator("canvas");
-    await canvas.waitFor({ state: "attached", timeout: 10_000 });
-    expect(await canvas.count()).toBeGreaterThan(0);
-  });
-
-  test("can open and view an mbtiles file", async () => {
-    await openMbtilesFile(page);
-    const canvas = page.locator("#map canvas");
-    expect(await canvas.count()).toBeGreaterThan(0);
+    await page.waitForFunction(
+      (name) =>
+        document
+          .querySelector("#style-chip .va-style-name")
+          ?.textContent?.includes(name),
+      "plain_1.mbtiles",
+      { timeout: 30_000 },
+    );
   });
 
   test("can pan the map by dragging", async () => {
-    await openMbtilesFile(page);
-
+    await loadMbtilesFixture(page);
     const canvas = page.locator("#map canvas").first();
     const box = await canvas.boundingBox();
     expect(box).toBeTruthy();
-
-    // Get the initial map center
     const centerBefore = await page.evaluate(
       () => (window as any).maplibreMap?.getCenter(),
     );
-
-    // Drag from center to the left
     const startX = box!.x + box!.width / 2;
     const startY = box!.y + box!.height / 2;
     await page.mouse.move(startX, startY);
     await page.mouse.down();
     await page.mouse.move(startX - 100, startY, { steps: 5 });
     await page.mouse.up();
-
-    // Wait briefly for the map to update
     await page.waitForTimeout(500);
-
     const centerAfter = await page.evaluate(
       () => (window as any).maplibreMap?.getCenter(),
     );
-
-    // The longitude should have changed after dragging horizontally
     expect(centerAfter.lng).not.toBeCloseTo(centerBefore.lng, 1);
   });
 
   const testDownload = opts?.skipDownloadTest ? test.skip : test;
-  testDownload("can download mbtiles as smp file", async () => {
-    await openMbtilesFile(page);
+  testDownload("can download mbtiles as smp file", { timeout: 90_000 }, async () => {
+    await loadMbtilesFixture(page);
 
-    const downloadBtn = page.locator("#download-smp");
-    await downloadBtn.waitFor({ state: "visible", timeout: 10_000 });
-
-    // Remove showSaveFilePicker so the code uses the service worker streaming
-    // path (which triggers a download via Content-Disposition that Playwright
-    // can capture).
+    // Force the service-worker streaming path so the test captures the download.
     await page.evaluate(async () => {
       delete (window as any).showSaveFilePicker;
-      // Ensure service worker is active before triggering download
       await navigator.serviceWorker.ready;
     });
 
+    await page.locator("#download-button").click();
+    await page.locator(".dm-primary").waitFor({ state: "visible" });
+
+    // Pull the slider down to a small zoom so the tile-count estimate stays
+    // below the hard warning threshold for the global default bbox.
+    await page.evaluate(() => {
+      const slider = document.querySelector(
+        ".dm-zoom-slider",
+      ) as HTMLInputElement;
+      slider.value = "2";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.waitForTimeout(300);
+
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 60_000 }),
-      downloadBtn.click(),
+      page.locator(".dm-primary").click(),
     ]);
 
-    expect(download.suggestedFilename()).toBe("plain_1.smp");
+    expect(download.suggestedFilename()).toMatch(/\.smp$/);
 
     const readable = await download.createReadStream();
     const chunks: Buffer[] = [];
@@ -201,10 +188,9 @@ function appTests(
       chunks.push(Buffer.from(chunk));
     }
     const fileContents = Buffer.concat(chunks);
-
     // SMP files are zip archives — verify the zip magic number (PK\x03\x04)
-    expect(fileContents[0]).toBe(0x50); // P
-    expect(fileContents[1]).toBe(0x4b); // K
+    expect(fileContents[0]).toBe(0x50);
+    expect(fileContents[1]).toBe(0x4b);
     expect(fileContents.length).toBeGreaterThan(100);
   });
 }
@@ -223,7 +209,6 @@ describeFirefox("firefox", () => {
 // Playwright's WebKit uses ephemeral (non-persistent) browser contexts which
 // do not support OPFS. This app requires OPFS, so WebKit e2e tests are skipped.
 // OPFS works in real Safari — this is a Playwright limitation, not a Safari bug.
-// See: https://github.com/microsoft/playwright/issues/18235
 describe.skip("webkit", () => {
   appTests(webkit);
 });

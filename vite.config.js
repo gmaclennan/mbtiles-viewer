@@ -1,7 +1,38 @@
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+// Stamp the build moment into the bundle so a device on the network can
+// confirm what it's running. In dev this is the vite-server start time; in a
+// production build it's the build time. Reset by restarting vite or rebuilding.
+const BUILD_VERSION = new Date()
+  .toISOString()
+  .replace("T", " ")
+  .slice(0, 19);
+
+// Mirror of the Cloudflare Pages `_headers` rules for vite preview/dev so a
+// freshly-built sw.js bypasses the browser's 24-hour update rule.
+const noCacheForServiceWorker = {
+  name: "no-cache-for-sw",
+  configurePreviewServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const url = req.url ?? "";
+      if (
+        url === "/sw.js" ||
+        url === "/registerSW.js" ||
+        url === "/index.html" ||
+        url === "/"
+      ) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+      next();
+    });
+  },
+};
+
 export default defineConfig({
+  define: {
+    __BUILD_VERSION__: JSON.stringify(BUILD_VERSION),
+  },
   build: {
     chunkSizeWarningLimit: 1000,
   },
@@ -10,20 +41,24 @@ export default defineConfig({
   },
   server: {
     headers: {
+      // `credentialless` keeps SharedArrayBuffer + OPFS available while still
+      // allowing cross-origin resources (tile servers, preset preview tiles)
+      // that don't send CORP/CORS — they're loaded without credentials.
       "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cross-Origin-Embedder-Policy": "credentialless",
     },
   },
   preview: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cross-Origin-Embedder-Policy": "credentialless",
     },
   },
   optimizeDeps: {
     exclude: ["mbtiles-reader", "@sqlite.org/sqlite-wasm"],
   },
   plugins: [
+    noCacheForServiceWorker,
     VitePWA({
       strategies: "injectManifest",
       srcDir: "src",

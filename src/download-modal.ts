@@ -4,7 +4,8 @@ import {
   countTiles,
   DEFAULT_AVG_TILE_BYTES,
   DEFAULT_MAX_ZOOM,
-  HARD_TILES,
+  HUGE_MB,
+  HUGE_TILES,
   MAX_ZOOM_LIMIT,
   MIN_ZOOM_LIMIT,
   WARN_MB,
@@ -59,6 +60,10 @@ export class DownloadModal {
   private maxZoom = DEFAULT_MAX_ZOOM;
   private name = "";
   private desc = "";
+  /** Ticked the licence-acknowledgement checkbox (attribution/restrictive styles). */
+  private acknowledged = false;
+  /** The huge-download confirmation overlay while it's open. */
+  private hugeConfirmEl: HTMLDivElement | null = null;
   private currentStyle: AppStyle | null = null;
   private currentGeoBbox: GeoBbox | null = null;
   private previewMap: BboxMap | null = null;
@@ -110,6 +115,8 @@ export class DownloadModal {
     this.maxZoom = Math.min(this.effectiveMaxZoom, this.maxZoom);
     this.name = "";
     this.desc = "";
+    this.acknowledged = false;
+    this.closeHugeConfirm();
     this.status = "idle";
     this.progress = 0;
     this.errorText = null;
@@ -142,6 +149,7 @@ export class DownloadModal {
 
   close() {
     if (this.status === "downloading") return;
+    this.closeHugeConfirm();
     this.controller?.cancel();
     this.controller = null;
     this.previewMap?.destroy();
@@ -191,10 +199,21 @@ export class DownloadModal {
     return this.avgTileBytes != null;
   }
 
-  private get warnLevel(): "soft" | "hard" | null {
-    if (this.tileCount >= HARD_TILES) return "hard";
+  private get warnLevel(): "soft" | "huge" | null {
+    if (this.tileCount >= HUGE_TILES || this.sizeMB >= HUGE_MB) return "huge";
     if (this.tileCount >= WARN_TILES || this.sizeMB >= WARN_MB) return "soft";
     return null;
+  }
+
+  /** Restrictive/attribution styles require ticking the licence checkbox. */
+  private get needsAck(): boolean {
+    const lic = this.currentStyle?.license;
+    return lic === "attribution" || lic === "restrictive";
+  }
+
+  /** Whether the primary action is allowed to start from the idle state. */
+  private get canStart(): boolean {
+    return !this.needsAck || this.acknowledged;
   }
 
   private buildPreviewMap(host: HTMLDivElement) {
@@ -246,7 +265,10 @@ export class DownloadModal {
 
     const previewHost =
       existingPreview ?? document.createElement("div");
-    previewHost.className = "dm-preview-host";
+    // Only set on creation — BboxMap adds `bbox-map-root` (which carries the
+    // overflow:hidden that clips the bbox stroke), and reassigning className
+    // on re-render would drop it.
+    if (!existingPreview) previewHost.className = "dm-preview-host";
     previewCol.appendChild(previewHost);
     if (!existingPreview) this.buildPreviewMap(previewHost);
     previewCol.appendChild(this.previewBadges());
@@ -258,6 +280,8 @@ export class DownloadModal {
     formCol.appendChild(this.buildNameDescFields());
     formCol.appendChild(this.buildBoundsRow());
     formCol.appendChild(this.buildEstimate());
+    const licence = this.buildLicenceBanner();
+    if (licence) formCol.appendChild(licence);
     formCol.appendChild(this.buildWarningSlot());
     if (this.status === "error" && this.errorText) {
       formCol.appendChild(this.buildErrorBanner());
@@ -320,7 +344,7 @@ export class DownloadModal {
     if (this.step === 1) {
       const previewHost =
         existingPreview ?? document.createElement("div");
-      previewHost.className = "dm-preview-host";
+      if (!existingPreview) previewHost.className = "dm-preview-host";
       inner.appendChild(previewHost);
       if (!existingPreview) this.buildPreviewMap(previewHost);
       inner.appendChild(this.previewBadges());
@@ -333,14 +357,11 @@ export class DownloadModal {
       const cont = document.createElement("button");
       cont.className = "dm-primary";
       cont.dataset.dmSection = "continue";
-      cont.disabled = this.warnLevel === "hard";
-      cont.classList.toggle("dm-primary-disabled", this.warnLevel === "hard");
       cont.innerHTML = `
         Continue
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round"><path d="M3 7h8M7 3l4 4-4 4" /></svg>`;
       cont.addEventListener("click", () => {
-        if (this.warnLevel === "hard") return;
         this.step = 2;
         this.render();
       });
@@ -352,6 +373,8 @@ export class DownloadModal {
       form.appendChild(this.buildNameDescFields());
       form.appendChild(this.buildBoundsRow());
       form.appendChild(this.buildEstimate());
+      const licence = this.buildLicenceBanner();
+      if (licence) form.appendChild(licence);
       form.appendChild(this.buildWarningSlot());
       if (this.status === "error" && this.errorText) {
         form.appendChild(this.buildErrorBanner());
@@ -551,13 +574,70 @@ export class DownloadModal {
     if (!lvl) return null;
     const wrap = document.createElement("div");
     wrap.className = `dm-warn dm-warn-${lvl}`;
-    const icon = lvl === "hard" ? "⛔" : "⚠";
+    const icon = lvl === "huge" ? "⛔" : "⚠";
     const sizeStr = formatBytes(this.tileCount * this.bytesPerTile);
     const msg =
-      lvl === "hard"
-        ? `This package is very large (<b>${this.tileCount.toLocaleString()} tiles · ~${sizeStr}</b>). Consider lowering max zoom or shrinking the area.`
+      lvl === "huge"
+        ? `Very large package — <b>${this.tileCount.toLocaleString()} tiles · ~${sizeStr}</b>. You'll be asked to confirm before downloading. Consider lowering max zoom or shrinking the area.`
         : `Heads up — this package is large (~<b>${sizeStr}</b>). Make sure you're on Wi-Fi.`;
     wrap.innerHTML = `<span class="dm-warn-icon">${icon}</span><span>${msg}</span>`;
+    return wrap;
+  }
+
+  /** Licence-acknowledgement banner — shown only for attribution/restrictive
+   *  styles. The required checkbox gates the primary download button. */
+  private buildLicenceBanner(): HTMLDivElement | null {
+    const style = this.currentStyle;
+    if (!style || !this.needsAck) return null;
+    const restrictive = style.license === "restrictive";
+    const wrap = document.createElement("div");
+    wrap.className = `dm-licence dm-licence-${
+      restrictive ? "restrictive" : "attribution"
+    }`;
+    const title = restrictive ? "Restricted licence" : "Attribution required";
+    const body = restrictive
+      ? "This basemap has restrictive terms of use. Some providers prohibit offline caching or commercial re-use — you are responsible for compliance."
+      : "This basemap must be credited wherever it's displayed. By downloading you agree to keep the attribution visible.";
+
+    const head = document.createElement("div");
+    head.className = "dm-licence-head";
+    head.innerHTML = `
+      <span class="dm-licence-icon">${restrictive ? "⛔" : "⚠"}</span>
+      <div>
+        <div class="dm-licence-title"></div>
+        <div class="dm-licence-body"></div>
+        <div class="dm-licence-attr"></div>
+      </div>`;
+    head.querySelector(".dm-licence-title")!.textContent = title;
+    head.querySelector(".dm-licence-body")!.textContent = body;
+    head.querySelector(".dm-licence-attr")!.innerHTML = style.attribution || "";
+    if (style.termsUrl) {
+      const terms = document.createElement("a");
+      terms.className = "dm-licence-terms";
+      terms.href = style.termsUrl;
+      terms.target = "_blank";
+      terms.rel = "noopener noreferrer";
+      terms.textContent = `Read ${style.name}'s terms of use ↗`;
+      head.querySelector(".dm-licence-attr")!.after(terms);
+    }
+    wrap.appendChild(head);
+
+    const label = document.createElement("label");
+    label.className = "dm-licence-check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "dm-licence-checkbox";
+    cb.checked = this.acknowledged;
+    cb.addEventListener("change", () => {
+      this.acknowledged = cb.checked;
+      this.render();
+    });
+    label.appendChild(cb);
+    const text = document.createElement("span");
+    text.innerHTML = `I'll comply with <b></b>'s terms of use when storing &amp; redistributing the downloaded tiles.`;
+    text.querySelector("b")!.textContent = style.name;
+    label.appendChild(text);
+    wrap.appendChild(label);
     return wrap;
   }
 
@@ -593,17 +673,23 @@ export class DownloadModal {
     btn.className = "dm-primary";
     btn.dataset.dmSection = "primary";
     const isDownloading = this.status === "downloading";
-    btn.disabled = isDownloading || this.warnLevel === "hard";
+    const isHuge = this.status === "idle" && this.warnLevel === "huge";
+    btn.disabled = isDownloading || (this.status === "idle" && !this.canStart);
     btn.classList.toggle("dm-primary-disabled", btn.disabled);
     btn.classList.toggle("dm-primary-error", this.status === "error");
     btn.classList.toggle("dm-primary-success", this.status === "success");
+    btn.classList.toggle("dm-primary-huge", isHuge && !btn.disabled);
 
     let label: string;
-    if (this.status === "idle") label = "Download package";
-    else if (this.status === "downloading")
+    if (this.status === "idle") {
+      label = isHuge ? "Review & download…" : "Download package";
+    } else if (this.status === "downloading") {
       label = `Downloading… ${Math.round(this.progress * 100)}%`;
-    else if (this.status === "error") label = "Retry download";
-    else label = "Done";
+    } else if (this.status === "error") {
+      label = "Retry download";
+    } else {
+      label = "Done";
+    }
 
     if (isDownloading) {
       btn.innerHTML = `
@@ -616,10 +702,88 @@ export class DownloadModal {
       btn.textContent = label;
     }
     btn.addEventListener("click", () => {
-      if (this.status === "success") this.close();
-      else this.startDownload();
+      if (this.status === "success") {
+        this.close();
+      } else if (this.status === "error") {
+        this.startDownload();
+      } else if (this.warnLevel === "huge") {
+        this.openHugeConfirm();
+      } else {
+        this.startDownload();
+      }
     });
     return btn;
+  }
+
+  /** Modal-on-modal confirmation gate for huge downloads. The user must type
+   *  the rounded estimated size in MB before the override button enables. */
+  private openHugeConfirm() {
+    if (!this.canStart) return;
+    this.closeHugeConfirm();
+    const tiles = this.tileCount;
+    const sizeMB = this.sizeMB;
+    const expected = String(Math.round(sizeMB));
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "dm-huge-backdrop";
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) this.closeHugeConfirm();
+    });
+
+    const modal = document.createElement("div");
+    modal.className = "dm-huge-modal";
+    modal.innerHTML = `
+      <div class="dm-huge-head">
+        <div class="dm-huge-mark">⛔</div>
+        <div>
+          <div class="dm-huge-title">Are you really sure?</div>
+          <div class="dm-huge-sub">This is much larger than typical.</div>
+        </div>
+      </div>
+      <div class="dm-huge-stats">
+        <span>Tiles</span><span class="dm-huge-stat-val">${tiles.toLocaleString()}</span>
+        <span>Estimated size</span>
+        <span class="dm-huge-stat-val dm-huge-stat-size">${expected} MB</span>
+      </div>
+      <div class="dm-huge-friction">
+        <label class="dm-huge-label">Type the estimated size in MB to confirm</label>
+        <div class="dm-huge-input-wrap">
+          <input type="text" class="dm-huge-input" inputmode="numeric"
+            autocomplete="off" spellcheck="false" placeholder="${expected}" />
+          <span class="dm-huge-suffix">MB</span>
+        </div>
+        <button type="button" class="dm-huge-confirm" disabled>Download anyway</button>
+      </div>
+      <button type="button" class="dm-huge-cancel">Cancel</button>`;
+
+    const input = modal.querySelector<HTMLInputElement>(".dm-huge-input")!;
+    const confirmBtn = modal.querySelector<HTMLButtonElement>(
+      ".dm-huge-confirm",
+    )!;
+    const sync = () => {
+      const matched = input.value.trim() === expected;
+      confirmBtn.disabled = !matched;
+      input.classList.toggle("dm-huge-input-ok", matched);
+    };
+    input.addEventListener("input", sync);
+    confirmBtn.addEventListener("click", () => {
+      if (input.value.trim() !== expected) return;
+      this.closeHugeConfirm();
+      this.startDownload();
+    });
+    modal
+      .querySelector<HTMLButtonElement>(".dm-huge-cancel")!
+      .addEventListener("click", () => this.closeHugeConfirm());
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    this.hugeConfirmEl = backdrop;
+    input.focus();
+  }
+
+  private closeHugeConfirm() {
+    this.hugeConfirmEl?.remove();
+    this.hugeConfirmEl = null;
   }
 
   /** Update only the parts of the form that depend on maxZoom. We deliberately
@@ -651,23 +815,18 @@ export class DownloadModal {
       if (banner) slot.appendChild(banner);
     });
 
-    // Reflect the warnLevel on the primary + Continue buttons.
-    const hardBlock = this.warnLevel === "hard";
-    this.el
-      .querySelectorAll<HTMLButtonElement>(
-        '[data-dm-section="primary"], [data-dm-section="continue"]',
-      )
-      .forEach((btn) => {
-        const isDownloading =
-          btn.dataset.dmSection === "primary" && this.status === "downloading";
-        btn.disabled = isDownloading || hardBlock;
-        btn.classList.toggle("dm-primary-disabled", btn.disabled);
-      });
+    // The primary button's label + colour flip at the huge threshold — rebuild
+    // it in place so the slider keeps it in sync.
+    const primary = this.el.querySelector<HTMLButtonElement>(
+      '[data-dm-section="primary"]',
+    );
+    if (primary && this.status === "idle") {
+      primary.replaceWith(this.buildPrimaryButton());
+    }
   }
 
   private startDownload() {
     if (!this.currentStyle || !this.currentGeoBbox) return;
-    if (this.warnLevel === "hard") return;
     this.status = "downloading";
     this.progress = 0;
     this.errorText = null;

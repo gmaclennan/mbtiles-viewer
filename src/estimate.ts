@@ -7,12 +7,14 @@ export const DEFAULT_AVG_TILE_BYTES = 18 * 1024;
 /** Number of random tiles fetched per source on each sample run. */
 export const SAMPLE_TILES_PER_SOURCE = 6;
 
-/** Above this tile count or estimated size, show a soft warning. */
+/** At/above this tile count or estimated size, show a soft (yellow) warning. */
 export const WARN_TILES = 25_000;
 export const WARN_MB = 250;
 
-/** Above this tile count, show a hard block. */
-export const HARD_TILES = 100_000;
+/** At/above this tile count or estimated size, show a hard (red) warning and
+ *  gate the download behind a typed confirmation. */
+export const HUGE_TILES = 500_000;
+export const HUGE_MB = 2_500;
 
 export const MAX_ZOOM_LIMIT = 18;
 export const MIN_ZOOM_LIMIT = 0;

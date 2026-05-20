@@ -41,6 +41,15 @@ async function loadMbtilesFixture(page: Page) {
   );
 }
 
+/** Wait until the map has produced a bbox (bounds summary stops showing "—"),
+ *  which means the download flow has a region to work with. */
+async function waitForMapReady(page: Page) {
+  await page.waitForFunction(() => {
+    const s = document.querySelector(".bounds-summary");
+    return !!s && s.textContent !== "—" && s.textContent !== "";
+  });
+}
+
 function appTests(
   browserType: BrowserType,
   launchOptions?: Record<string, unknown>,
@@ -90,6 +99,104 @@ function appTests(
     await page.locator(".help-popover").waitFor({ state: "visible" });
     await page.locator(".help-popover-close").click();
     await page.locator(".help-popover").waitFor({ state: "hidden" });
+  });
+
+  test("attribution popover shows the active style", async () => {
+    await page.goto(baseUrl);
+    await page.locator(".attrib-btn").waitFor({ state: "visible" });
+    await page.locator(".attrib-btn").click();
+    await page.locator(".attrib-popover").waitFor({ state: "visible" });
+    expect(await page.locator(".attrib-pill").count()).toBe(1);
+    await page.locator(".attrib-popover-close").click();
+    await page.locator(".attrib-popover").waitFor({ state: "hidden" });
+  });
+
+  test("bounds panel lock / unlock toggles the locked state", async () => {
+    await page.goto(baseUrl);
+    await waitForMapReady(page);
+    await page.locator(".bounds-toggle").click();
+    const lockBtn = page.locator(".bounds-lock-btn");
+    await lockBtn.waitFor({ state: "visible" });
+    expect((await lockBtn.textContent())?.includes("Lock bounds")).toBe(true);
+
+    await lockBtn.click();
+    expect((await lockBtn.textContent())?.includes("Unlock")).toBe(true);
+    expect(
+      await page.locator(".bbox-map-overlay.bbox-locked").count(),
+    ).toBe(1);
+    // Resize handles are disabled while locked.
+    expect(await page.locator(".bbox-handle").first().isVisible()).toBe(false);
+
+    await lockBtn.click();
+    expect(
+      await page.locator(".bbox-map-overlay.bbox-locked").count(),
+    ).toBe(0);
+    expect(await page.locator(".bbox-handle").first().isVisible()).toBe(true);
+  });
+
+  test("restrictive style gates download behind licence acknowledgement", async () => {
+    await page.goto(baseUrl);
+    await page.locator("#style-chip").waitFor({ state: "visible" });
+    await waitForMapReady(page);
+    await page.locator("#style-chip").click();
+    await page
+      .locator(".sp-preset-card", { hasText: "Esri Satellite" })
+      .first()
+      .click();
+    await page.locator(".sp-backdrop").waitFor({ state: "hidden" });
+
+    await page.locator("#download-button").click();
+    await page.locator(".dm-primary").waitFor({ state: "visible" });
+    // Restrictive licence ⇒ banner shown, primary disabled until acknowledged.
+    await page.locator(".dm-licence").waitFor({ state: "visible" });
+    expect(await page.locator(".dm-primary").isDisabled()).toBe(true);
+
+    await page.locator(".dm-licence-checkbox").check();
+    await page
+      .locator(".dm-primary:not([disabled])")
+      .waitFor({ state: "visible" });
+    expect(await page.locator(".dm-primary").isEnabled()).toBe(true);
+  });
+
+  test("huge download requires a typed-size confirmation", async () => {
+    await page.goto(baseUrl);
+    // Start from a clean slate — a prior test may have persisted a restrictive
+    // style, which would gate the download behind the licence checkbox.
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    await page.locator("#style-chip").waitFor({ state: "visible" });
+    await waitForMapReady(page);
+    // Zoom right out so the bbox covers a huge area → huge tile estimate.
+    await page.evaluate(() => (window as any).maplibreMap?.setZoom(1));
+    await page.waitForTimeout(600);
+
+    await page.locator("#download-button").click();
+    await page.locator(".dm-primary").waitFor({ state: "visible" });
+    // Give the async max-zoom resolve a moment to settle.
+    await page.waitForTimeout(1200);
+    const primary = page.locator(".dm-primary");
+    expect((await primary.textContent())?.includes("Review & download")).toBe(
+      true,
+    );
+
+    await primary.click();
+    await page.locator(".dm-huge-modal").waitFor({ state: "visible" });
+    expect(await page.locator(".dm-huge-confirm").isDisabled()).toBe(true);
+
+    // Typing the displayed size in MB enables the override button.
+    const sizeText =
+      (await page.locator(".dm-huge-stat-size").textContent()) ?? "";
+    const mb = sizeText.replace(/[^0-9]/g, "");
+    expect(mb.length).toBeGreaterThan(0);
+    await page.locator(".dm-huge-input").fill(mb);
+    await page
+      .locator(".dm-huge-confirm:not([disabled])")
+      .waitFor({ state: "visible" });
+    expect(await page.locator(".dm-huge-confirm").isEnabled()).toBe(true);
+
+    // Cancel backs out without starting the download.
+    await page.locator(".dm-huge-cancel").click();
+    await page.locator(".dm-huge-modal").waitFor({ state: "hidden" });
   });
 
   test("opens an mbtiles file via the style picker", async () => {

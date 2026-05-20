@@ -24,6 +24,7 @@ window.addEventListener("load", () => {
 
 import {
   PRESET_STYLES,
+  CUSTOM_URL_ATTRIBUTION,
   isTileUrlTemplate,
   rasterStyleForTileUrl,
   type AppStyle,
@@ -31,6 +32,7 @@ import {
 } from "./preset-styles.ts";
 import { BboxMap, type GeoBbox } from "./bbox-map.ts";
 import { BoundsPanel } from "./bounds-panel.ts";
+import { AttributionButton } from "./attribution-button.ts";
 import { HelpButton, viewportDiagnostics } from "./help-button.ts";
 import { InstallBanner } from "./install-banner.ts";
 import { StylePicker } from "./style-picker.ts";
@@ -194,6 +196,8 @@ function initialStyle(): AppStyle {
         spec: recent.spec,
         accessToken: recent.accessToken,
         maxZoom: recent.maxZoom,
+        license: "restrictive",
+        attribution: CUSTOM_URL_ATTRIBUTION,
       };
     }
   }
@@ -229,9 +233,16 @@ brand.innerHTML =
   '<span class="va-brand-mark">◆</span> Map Downloader';
 overlayHost.appendChild(brand);
 
-const help = new HelpButton();
-help.el.classList.add("va-help");
-overlayHost.appendChild(help.el);
+// Top-right controls: attribution "i" stacked above Help in a vertical column.
+const topRight = document.createElement("div");
+topRight.className = "va-top-right";
+overlayHost.appendChild(topRight);
+
+const attribution = new AttributionButton({ onOpen: () => help.close() });
+const help = new HelpButton({ onOpen: () => attribution.close() });
+topRight.appendChild(attribution.el);
+topRight.appendChild(help.el);
+attribution.setStyle(currentStyle);
 
 // ── Bottom action card ────────────────────────────────────────────────────
 const card = document.createElement("div");
@@ -266,9 +277,32 @@ downloadBtn.innerHTML = `
   Download`;
 cardRow.appendChild(downloadBtn);
 
+// When the bounds are locked, the bbox is anchored to these geo coords and
+// follows the map on screen; input edits flow straight into the locked extent.
+let lockedBounds: GeoBbox | null = null;
 const boundsPanel = new BoundsPanel({
-  onApply: (next) => bboxMap.setGeoBboxExact(next),
+  onApply: (next) => {
+    if (lockedBounds) {
+      lockedBounds = bboxMap.setLockedGeoBbox(next) ?? next;
+      return lockedBounds;
+    }
+    return bboxMap.setGeoBboxExact(next);
+  },
   getMinGeoSpan: () => bboxMap.getMinGeoSpan(),
+  onLock: () => {
+    const geo = bboxMap.lockBounds();
+    if (!geo) return;
+    lockedBounds = geo;
+    currentGeoBbox = geo;
+    boundsPanel.setLocked(true);
+    boundsPanel.setGeoBbox(geo);
+  },
+  onUnlock: () => {
+    bboxMap.unlockAndRefit();
+    lockedBounds = null;
+    boundsPanel.setLocked(false);
+    boundsPanel.collapse();
+  },
 });
 card.appendChild(boundsPanel.el);
 
@@ -286,8 +320,20 @@ function thumbColor(id: string): string {
     liberty: "#cfe2c8",
     bright: "#ffd560",
     dark: "#2a2f3a",
-    satellite: "#2d6b3d",
+    fiord: "#45516e",
+    satellite: "#1a3b5c",
+    "esri-clarity": "#1f3a52",
+    sentinel2: "#1f2c3a",
+    nimbo: "#152a4c",
+    "glad-landsat": "#1f2a40",
     topo: "#a8c890",
+    "esri-topo": "#cdb98c",
+    hillshade: "#bfbfbf",
+    "esri-shaded-relief": "#b39764",
+    "esri-terrain-base": "#c9d9b0",
+    "esri-natgeo": "#d4a86a",
+    cyclosm: "#f3eee0",
+    humanitarian: "#f6d7c1",
     custom: "#aaa",
     mbtiles: "#e8b070",
   };
@@ -328,6 +374,7 @@ downloadBtn.addEventListener("click", () => {
 function setStyle(style: AppStyle) {
   currentStyle = style;
   updateStyleChip();
+  attribution.setStyle(style);
   bboxMap.setStyle(style);
   persistSelected(style);
 }
@@ -335,6 +382,11 @@ function setStyle(style: AppStyle) {
 function persistSelected(style: AppStyle) {
   if ("isMbtiles" in style && style.isMbtiles) {
     // Don't persist mbtiles — OPFS file is gone after reload.
+    saveSelected(null);
+    return;
+  }
+  if (style.id.startsWith("qms-")) {
+    // QMS styles aren't persisted — the catalogue isn't available at boot.
     saveSelected(null);
     return;
   }
@@ -405,6 +457,11 @@ async function loadMbtilesFile(file: File) {
     spec,
     maxZoom:
       typeof metadata.maxzoom === "number" ? metadata.maxzoom : undefined,
+    attribution:
+      typeof metadata.attribution === "string" && metadata.attribution
+        ? metadata.attribution
+        : "Local .mbtiles file.",
+    license: "open",
   };
   setStyle(mbtilesStyle);
   if (Array.isArray(metadata.bounds) && metadata.bounds.length === 4) {
@@ -474,8 +531,13 @@ function startDownload(
         if (inlineSpec) {
           message.styleSpec = inlineSpec;
         } else if (isTileUrlTemplate(style.url)) {
-          // Tile URL template — wrap into a basic raster style.
-          message.styleSpec = rasterStyleForTileUrl(style.url);
+          // Tile URL template — wrap into a basic raster style, carrying the
+          // source's tile scheme (xyz/tms) through to the downloader.
+          message.styleSpec = rasterStyleForTileUrl(
+            style.url,
+            undefined,
+            "scheme" in style ? style.scheme : undefined,
+          );
         } else {
           message.styleUrl = style.url;
         }

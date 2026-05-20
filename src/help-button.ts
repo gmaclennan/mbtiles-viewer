@@ -13,15 +13,22 @@ const isIos = () =>
   /iPad|iPhone|iPod/.test(navigator.userAgent) &&
   !(window as unknown as { MSStream?: unknown }).MSStream;
 
+export interface HelpButtonOptions {
+  /** Fired when the popover opens — lets the host close sibling popovers. */
+  onOpen?: () => void;
+}
+
 export class HelpButton {
   readonly el: HTMLDivElement;
   private btn: HTMLButtonElement;
   private popoverWrap: HTMLDivElement | null = null;
   private open = false;
+  private opts: HelpButtonOptions;
   /** Stashed beforeinstallprompt event so the user can install on demand. */
   private deferredPrompt: BeforeInstallPromptEvent | null = null;
 
-  constructor() {
+  constructor(opts: HelpButtonOptions = {}) {
+    this.opts = opts;
     this.el = document.createElement("div");
     this.el.className = "help-root";
 
@@ -60,6 +67,7 @@ export class HelpButton {
   }
 
   private show() {
+    this.opts.onOpen?.();
     this.open = true;
     this.btn.classList.add("help-btn-active");
     this.popoverWrap = document.createElement("div");
@@ -91,7 +99,6 @@ export class HelpButton {
         (window as unknown as { __APP_VERSION__?: string })
           .__APP_VERSION__ ?? `build ${__BUILD_VERSION__}`
       }</div>
-      <pre class="help-popover-diag">${this.diagText()}</pre>
     `;
     popover
       .querySelector(".help-popover-close")
@@ -148,15 +155,11 @@ export class HelpButton {
     return wrap;
   }
 
-  private close() {
+  close() {
     this.open = false;
     this.btn.classList.remove("help-btn-active");
     this.popoverWrap?.remove();
     this.popoverWrap = null;
-  }
-
-  private diagText(): string {
-    return viewportDiagnostics();
   }
 }
 

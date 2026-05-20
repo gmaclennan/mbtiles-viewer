@@ -20,6 +20,9 @@ export interface RecentEntry {
    *  For style URLs we follow source.tiles[0]; if that's vector pbf we leave
    *  this unset and the card falls back to a solid swatch. */
   previewTileUrl?: string;
+  /** Subdomain list for tile templates containing `{subdomain}`/`{s}` — needed
+   *  to fill `previewTileUrl` correctly for hosts like Bing (t0–t3). */
+  subdomains?: string[];
   /** Set to "raster" only when previewTileUrl points at an image-format tile;
    *  vector pbf can't be rendered into an <img>. */
   previewKind?: "raster";

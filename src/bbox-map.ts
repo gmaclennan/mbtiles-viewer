@@ -277,6 +277,72 @@ export class BboxMap {
     if (!this.opts.lockedGeoBbox) this.resetBboxToInset();
   }
 
+  /** True while the bbox is locked to a fixed geo extent. */
+  isLocked(): boolean {
+    return this.opts.lockedGeoBbox != null;
+  }
+
+  /** Lock the bbox to its current geo extent. While locked the bbox stays
+   *  anchored to lat/lon and follows the map on screen; resize handles are
+   *  disabled. Returns the captured geo bounds. */
+  lockBounds(): GeoBbox | null {
+    const geo = this.getGeoBbox();
+    if (!geo) return null;
+    this.opts.lockedGeoBbox = geo;
+    this.overlayEl.classList.add("bbox-locked");
+    this.syncBboxFromGeo();
+    return geo;
+  }
+
+  /** Update the locked geo extent (e.g. from the bounds inputs) and re-project
+   *  the on-screen bbox. No-op when the bbox isn't locked. */
+  setLockedGeoBbox(geo: GeoBbox): GeoBbox | null {
+    if (!this.opts.lockedGeoBbox) return null;
+    this.opts.lockedGeoBbox = geo;
+    this.syncBboxFromGeo();
+    this.onBboxChange?.(geo);
+    return geo;
+  }
+
+  /** Clear the lock, re-enable resize handles, and animate the map so the
+   *  just-unlocked bounds fill the viewport at the standard inset margin —
+   *  the same rule used after a manual resize-then-release. */
+  unlockAndRefit() {
+    const geo = this.opts.lockedGeoBbox;
+    this.opts.lockedGeoBbox = null;
+    this.overlayEl.classList.remove("bbox-locked");
+    if (!geo) return;
+    if (!this.mapReady) {
+      this.resetBboxToInset();
+      return;
+    }
+    const inset = this.computeInsetPx();
+    const screen = this.projectGeo(geo);
+    const bbW = Math.abs(screen.r - screen.l);
+    const bbH = Math.abs(screen.b - screen.t);
+    this.trackingGeo = geo;
+    this.map.fitBounds(
+      [
+        [geo.west, geo.south],
+        [geo.east, geo.north],
+      ],
+      {
+        padding: {
+          top: inset,
+          left: inset,
+          right: inset,
+          bottom: inset + this.opts.bottomInset,
+        },
+        animate: true,
+        duration: 600,
+      },
+    );
+    this.map.once("moveend", () => {
+      this.trackingGeo = null;
+      this.resetBboxToInset({ w: bbW, h: bbH });
+    });
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   /** Equal pixel margin used on all four sides of the usable area. */
@@ -419,7 +485,9 @@ export class BboxMap {
   }
 
   private startHandleDrag(handle: HandleKey, e: PointerEvent) {
-    if (!this.opts.enableResize || !this.bbox) return;
+    if (!this.opts.enableResize || this.opts.lockedGeoBbox || !this.bbox) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;

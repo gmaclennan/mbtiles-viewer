@@ -1,301 +1,592 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import pDefer, { type DeferredPromise } from "p-defer";
-import { includeKeys } from "filter-obj";
-import createProtocolHandler from "./protocol-handler.ts";
-import { pEvent } from "p-event";
-import {
-  NavigationControl,
-  type IControl,
-  type StyleSpecification,
-} from "maplibre-gl";
-import { layerStyles } from "./layer-styles.ts";
+import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
-// Register service worker for PWA + streaming downloads
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register(
-    import.meta.env.MODE === "production" ? "/sw.js" : "/dev-sw.js?dev-sw",
-    { type: import.meta.env.MODE === "production" ? "classic" : "module" },
-  );
+// `__BUILD_VERSION__` is set when vite starts the dev server (or at production
+// build time). It only changes when you restart vite. We also log a runtime
+// stamp on every page load so an HMR refresh / hard refresh is observable.
+const LOAD_STAMP = new Date().toISOString().replace("T", " ").slice(0, 19);
+console.info(
+  `[mbtiles-viewer] build ${__BUILD_VERSION__} · loaded ${LOAD_STAMP}`,
+);
+(window as unknown as { __APP_VERSION__: string }).__APP_VERSION__ =
+  `build ${__BUILD_VERSION__} · loaded ${LOAD_STAMP}`;
+
+// Dump viewport diagnostics to the console too — easier to copy when
+// connected via Safari Web Inspector / remote-debug than reading them
+// off the on-screen popover. Logged after layout settles.
+window.addEventListener("load", () => {
+  // One frame later so MapLibre has had a chance to size its canvas.
+  requestAnimationFrame(() => {
+    console.warn(`[viewport]\n${viewportDiagnostics()}`);
+  });
+});
+
+import {
+  PRESET_STYLES,
+  CUSTOM_URL_ATTRIBUTION,
+  isTileUrlTemplate,
+  rasterStyleForTileUrl,
+  type AppStyle,
+  type MbtilesStyle,
+} from "./preset-styles.ts";
+import { BboxMap, type GeoBbox } from "./bbox-map.ts";
+import { BoundsPanel } from "./bounds-panel.ts";
+import { AttributionButton } from "./attribution-button.ts";
+import { HelpButton, viewportDiagnostics } from "./help-button.ts";
+import { InstallBanner } from "./install-banner.ts";
+import { StylePicker } from "./style-picker.ts";
+import { DownloadModal, type DownloadController } from "./download-modal.ts";
+import { OverlayPanel } from "./overlay-panel.ts";
+import { isGeoJSONFile } from "./overlay-model.ts";
+import { layerStyles } from "./layer-styles.ts";
+import createProtocolHandler from "./protocol-handler.ts";
+import {
+  loadRecents,
+  loadSelected,
+  recentIdForUrl,
+  saveSelected,
+} from "./recents-store.ts";
+
+// ── Service worker (used for streaming downloads + PWA caching) ───────────
+// Hand-rolled registration so we can:
+//   - pass `updateViaCache: 'none'`, which makes the browser bypass its 24h
+//     HTTP-cache rule for sw.js (the single biggest reason a fresh deploy
+//     fails to reach existing users)
+//   - poll registration.update() periodically for tabs left open all day
+//   - listen for `controllerchange` and reload exactly once after the new
+//     SW takes over (in response to our SKIP_WAITING message)
+if ("serviceWorker" in navigator && !import.meta.env.DEV) {
+  registerServiceWorker();
 }
 
-// PWA Install Guidance
-const isStandalone =
-  window.matchMedia("(display-mode: standalone)").matches ||
-  ("standalone" in navigator && (navigator as any).standalone);
+async function registerServiceWorker() {
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js", {
+      type: "module",
+      updateViaCache: "none",
+    });
 
-if (!isStandalone) {
-  const installGuide = document.getElementById("install-guide");
-  const installButton = document.getElementById(
-    "install-button"
-  ) as HTMLButtonElement;
-  const installIos = document.getElementById("install-ios");
+    const surfaceWaiting = () => {
+      if (reg.waiting) showUpdateBanner(reg.waiting);
+    };
+    surfaceWaiting();
 
-  const isIos =
-    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-    !(window as any).MSStream;
+    reg.addEventListener("updatefound", () => {
+      const installing = reg.installing;
+      if (!installing) return;
+      installing.addEventListener("statechange", () => {
+        if (
+          installing.state === "installed" &&
+          navigator.serviceWorker.controller
+        ) {
+          // A new worker is waiting because an older one still controls us.
+          surfaceWaiting();
+        }
+      });
+    });
 
-  let deferredPrompt: any = null;
+    // Re-check every 5 min so users with the tab open all day still see
+    // updates. .update() is a no-op when nothing has changed.
+    setInterval(() => {
+      reg.update().catch(() => {});
+    }, 5 * 60 * 1000);
 
-  window.addEventListener("beforeinstallprompt", (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    installGuide?.classList.remove("hidden");
-    installButton?.classList.remove("hidden");
-  });
-
-  installButton?.addEventListener("click", async () => {
-    if (!deferredPrompt) return;
-    await deferredPrompt.prompt();
-    deferredPrompt = null;
-    installButton.classList.add("hidden");
-    installGuide?.classList.add("hidden");
-  });
-
-  if (isIos) {
-    installGuide?.classList.remove("hidden");
-    installIos?.classList.remove("hidden");
+    // After we send SKIP_WAITING the new SW activates and the browser
+    // swaps controllers; that's our cue to reload exactly once so the page
+    // pulls fresh, hashed asset bundles from the new precache.
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
+  } catch (err) {
+    console.warn("SW registration failed", err);
   }
 }
 
+function showUpdateBanner(waitingSW: ServiceWorker) {
+  if (document.getElementById("update-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "update-banner";
+  banner.className = "update-banner";
+  banner.innerHTML = `
+    <span class="update-banner-text">A new version is available.</span>
+    <button class="update-banner-btn" type="button">Refresh</button>
+    <button class="update-banner-dismiss" type="button" aria-label="Dismiss">×</button>
+  `;
+  banner
+    .querySelector(".update-banner-btn")
+    ?.addEventListener("click", () => {
+      // Tell the waiting SW to take over. The controllerchange handler above
+      // reloads the page once that completes.
+      waitingSW.postMessage({ type: "SKIP_WAITING" });
+    });
+  banner
+    .querySelector(".update-banner-dismiss")
+    ?.addEventListener("click", () => {
+      banner.remove();
+    });
+  document.body.appendChild(banner);
+}
+
+// Tile protocol for the current mbtiles file.
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   type: "module",
 });
+maplibregl.addProtocol("mbtiles", createProtocolHandler(getTileFromWorker));
 
-class Api {
-  #id = 0;
-  #worker: Worker;
-  #pendingTileRequests = new Map<number, DeferredPromise<ArrayBuffer>>();
-  constructor(worker: Worker) {
-    this.#worker = worker;
-    worker.addEventListener("message", this.#handleMessage);
-  }
-  #handleMessage = (event: MessageEvent<any>) => {
-    const pending = this.#pendingTileRequests.get(event.data.id);
-    if (!pending) return;
-    this.#pendingTileRequests.delete(event.data.id);
-    if (event.data.error) {
-      pending.reject(new Error(event.data.error));
-    } else {
-      pending.resolve(event.data.payload);
-    }
-  };
-  async getTile({ z, x, y }: { z: number; x: number; y: number }) {
-    const requestId = this.#id++;
-    const deferred = pDefer<ArrayBuffer>();
-    this.#pendingTileRequests.set(requestId, deferred);
-    this.#worker.postMessage({
-      type: "tileRequest",
-      payload: { z, x, y },
-      id: requestId,
-    });
-    return deferred.promise;
-  }
-}
+// ── Worker tile request plumbing (for the mbtiles:// protocol) ────────────
+const pendingTileRequests = new Map<number, DeferredPromise<ArrayBuffer>>();
+let tileReqId = 0;
 
-const api = new Api(worker);
-
-const input = document.getElementById("file-input") as HTMLInputElement;
-const button = document.getElementById("open-button") as HTMLButtonElement;
-const spinner = document.getElementById("spinner") as HTMLDivElement;
-const dropHint = document.getElementById("drop-hint") as HTMLParagraphElement;
-const dropOverlay = document.getElementById("drop-overlay") as HTMLDivElement;
-
-button?.addEventListener("click", async () => {
-  input?.click();
-});
-
-input?.addEventListener("change", async (e) => {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (!file) return;
-  openFile(file);
-});
-
-function openFile(file: File) {
-  setInProgress(true);
-  worker.postMessage({ type: "file", payload: file });
-}
-
-// Drag-and-drop support
-let dragCounter = 0;
-let mapVisible = false;
-
-document.addEventListener("dragenter", (e) => {
-  if (mapVisible) return;
-  e.preventDefault();
-  dragCounter++;
-  if (dragCounter === 1) {
-    dropOverlay?.classList.remove("hidden");
+worker.addEventListener("message", (event) => {
+  const data = event.data;
+  if (typeof data?.id === "number" && pendingTileRequests.has(data.id)) {
+    const deferred = pendingTileRequests.get(data.id)!;
+    pendingTileRequests.delete(data.id);
+    if (data.error) deferred.reject(new Error(data.error));
+    else deferred.resolve(data.payload);
   }
 });
 
-document.addEventListener("dragover", (e) => {
-  if (mapVisible) return;
-  e.preventDefault();
-  if (e.dataTransfer) {
-    e.dataTransfer.dropEffect = "copy";
-  }
-});
-
-document.addEventListener("dragleave", (e) => {
-  if (mapVisible) return;
-  e.preventDefault();
-  dragCounter--;
-  if (dragCounter <= 0) {
-    dragCounter = 0;
-    dropOverlay?.classList.add("hidden");
-  }
-});
-
-document.addEventListener("drop", (e) => {
-  if (mapVisible) return;
-  e.preventDefault();
-  dragCounter = 0;
-  dropOverlay?.classList.add("hidden");
-  const file = e.dataTransfer?.files?.[0];
-  if (file) {
-    openFile(file);
-  }
-});
-
-setInProgress(false);
-
-function setInProgress(inProgress: boolean) {
-  if (inProgress) {
-    input?.setAttribute("disabled", "true");
-    button?.setAttribute("disabled", "true");
-    spinner?.classList.remove("hidden");
-    button?.classList.add("hidden");
-    dropHint?.classList.add("hidden");
-  } else {
-    input?.removeAttribute("disabled");
-    spinner?.classList.add("hidden");
-    button?.classList.remove("hidden");
-    button?.removeAttribute("disabled");
-    dropHint?.classList.remove("hidden");
-  }
+function getTileFromWorker({
+  z,
+  x,
+  y,
+}: {
+  z: number;
+  x: number;
+  y: number;
+}): Promise<ArrayBuffer> {
+  const id = tileReqId++;
+  const deferred = pDefer<ArrayBuffer>();
+  pendingTileRequests.set(id, deferred);
+  worker.postMessage({ type: "tileRequest", payload: { z, x, y }, id });
+  return deferred.promise;
 }
 
 window.addEventListener("beforeunload", () => {
   worker.postMessage({ type: "beforeunload" });
 });
 
-pEvent<"message", MessageEvent<any>>(
-  worker,
-  "message",
-  (event) => event.data.type === "metadata"
-).then(async ({ data: { payload: metadata } }) => {
-  const map = await mapPromise;
-  map.addControl(
-    new NavigationControl({
-      showCompass: false,
-    }),
-    "top-right"
-  );
-  map.addControl(
-    new SaveControl({ fileName: metadata.fileName }),
-    "top-right"
-  );
-  map.addControl(
-    new CloseControl(() => {
-      window.location.reload();
-    }),
-    "top-left"
-  );
+// ── App state ────────────────────────────────────────────────────────────
+const mapHost = document.getElementById("map")!;
+const overlayHost = document.getElementById("map-overlay")!;
 
-  if (metadata.format === "pbf") {
-    map.addSource("mbtiles", {
-      ...includeKeys(metadata, ["bounds", "center", "minzoom", "maxzoom"]),
-      type: "vector",
-      tiles: ["mbtiles://./{z}/{x}/{y}"],
-    });
-    for (const layerStyle of layerStyles(metadata.vector_layers || [])) {
-      map.addLayer(layerStyle);
-    }
-  } else {
-    map.addSource("mbtiles", {
-      ...includeKeys(metadata, ["bounds", "center", "minzoom", "maxzoom"]),
-      type: "raster",
-      tiles: ["mbtiles://./{z}/{x}/{y}"],
-      tileSize: 256,
-    });
-    map.addLayer({
-      id: "mbtiles",
-      type: "raster",
-      source: "mbtiles",
-    });
+const isMobile = () => window.matchMedia("(max-width: 640px)").matches;
+const MOBILE_BOTTOM_INSET = 240;
+
+/** Restore the persisted selection (or fall back to the first preset). mbtiles
+ *  selections are not persisted — the underlying file is OPFS-scoped. */
+function initialStyle(): AppStyle {
+  const ref = loadSelected();
+  if (ref?.kind === "preset") {
+    const found = PRESET_STYLES.find((p) => p.id === ref.id);
+    if (found) return found;
   }
-  map.fitBounds(metadata.bounds, { duration: 0 });
-  map.on("sourcedata", () => {
-    map.getContainer().classList.remove("hidden");
-    mapVisible = true;
+  if (ref?.kind === "recent") {
+    const recent = loadRecents().find((r) => r.id === ref.id);
+    if (recent) {
+      return {
+        id: "custom",
+        name: recent.name,
+        desc: recent.url,
+        url: recent.url,
+        kind: recent.kind,
+        spec: recent.spec,
+        accessToken: recent.accessToken,
+        maxZoom: recent.maxZoom,
+        license: "restrictive",
+        attribution: CUSTOM_URL_ATTRIBUTION,
+      };
+    }
+  }
+  return PRESET_STYLES[0];
+}
+
+let currentStyle: AppStyle = initialStyle();
+let currentGeoBbox: GeoBbox | null = null;
+let currentMapZoom = 2;
+
+const bboxMap = new BboxMap({
+  container: mapHost,
+  initialStyle: currentStyle,
+  initialCenter: [-0.118, 51.509],
+  initialZoom: 10,
+  enableResize: !isMobile(),
+  bboxColor: "yellow",
+  bottomInset: isMobile() ? MOBILE_BOTTOM_INSET : 0,
+  onBboxChange: (g) => {
+    currentGeoBbox = g;
+    boundsPanel.setGeoBbox(g);
+  },
+  onMapStateChange: ({ zoom }) => {
+    currentMapZoom = zoom;
+  },
+});
+(window as any).maplibreMap = bboxMap.map;
+
+// ── Brand chip + help button ──────────────────────────────────────────────
+const brand = document.createElement("div");
+brand.className = "va-brand";
+brand.innerHTML =
+  '<span class="va-brand-mark">◆</span> Map Downloader';
+overlayHost.appendChild(brand);
+
+// Top-right controls: attribution "i" stacked above Help in a vertical column.
+const topRight = document.createElement("div");
+topRight.className = "va-top-right";
+overlayHost.appendChild(topRight);
+
+const attribution = new AttributionButton();
+const help = new HelpButton();
+attribution.init({ onOpen: () => help.close() });
+help.init({ onOpen: () => attribution.close() });
+topRight.appendChild(attribution.el);
+topRight.appendChild(help.el);
+attribution.setStyle(currentStyle);
+
+// ── Overlays (GeoJSON layers, desktop only) ───────────────────────────────
+// `new` (not createElement) so the import is a value reference the bundler
+// keeps, preserving the customElements.define side-effect.
+const overlayPanel = new OverlayPanel();
+overlayPanel.init({ map: bboxMap.map, isMobile });
+overlayHost.appendChild(overlayPanel.el);
+
+// ── Bottom action card ────────────────────────────────────────────────────
+const card = document.createElement("div");
+card.className = "va-card";
+overlayHost.appendChild(card);
+
+const cardRow = document.createElement("div");
+cardRow.className = "va-card-row";
+card.appendChild(cardRow);
+
+const styleChip = document.createElement("button");
+styleChip.id = "style-chip";
+styleChip.className = "va-style-chip";
+styleChip.innerHTML = `
+  <span class="va-style-thumb"></span>
+  <span class="va-style-text">
+    <span class="va-style-label">Style</span>
+    <span class="va-style-name"></span>
+  </span>
+  <svg class="va-style-chev" width="10" height="10" viewBox="0 0 10 10" fill="none"
+    stroke="currentColor" stroke-width="1.5"><path d="M2 4l3 3 3-3" /></svg>`;
+cardRow.appendChild(styleChip);
+
+const downloadBtn = document.createElement("button");
+downloadBtn.id = "download-button";
+downloadBtn.className = "va-download-btn";
+downloadBtn.innerHTML = `
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 1v8M3 6l4 4 4-4M2 12h10" />
+  </svg>
+  Download`;
+cardRow.appendChild(downloadBtn);
+
+// When the bounds are locked, the bbox is anchored to these geo coords and
+// follows the map on screen; input edits flow straight into the locked extent.
+let lockedBounds: GeoBbox | null = null;
+const boundsPanel = new BoundsPanel();
+boundsPanel.init({
+  onApply: (next) => {
+    // After an inputs-driven edit, settle the map onto the new bbox the same
+    // way a mouse resize does.
+    if (lockedBounds) {
+      lockedBounds = bboxMap.setLockedGeoBbox(next) ?? next;
+      bboxMap.refitToBbox();
+      return lockedBounds;
+    }
+    const result = bboxMap.setGeoBboxExact(next);
+    bboxMap.refitToBbox();
+    return result;
+  },
+  getMinGeoSpan: () => bboxMap.getMinGeoSpan(),
+  onLock: () => {
+    const geo = bboxMap.lockBounds();
+    if (!geo) return;
+    lockedBounds = geo;
+    currentGeoBbox = geo;
+    boundsPanel.setLocked(true);
+    boundsPanel.setGeoBbox(geo);
+  },
+  onUnlock: () => {
+    bboxMap.unlockAndRefit();
+    lockedBounds = null;
+    boundsPanel.setLocked(false);
+    boundsPanel.collapse();
+  },
+});
+card.appendChild(boundsPanel.el);
+
+function updateStyleChip() {
+  const thumb = styleChip.querySelector(".va-style-thumb") as HTMLElement;
+  const name = styleChip.querySelector(".va-style-name") as HTMLElement;
+  name.textContent = currentStyle.name;
+  thumb.style.background = thumbColor(currentStyle.id);
+}
+updateStyleChip();
+
+function thumbColor(id: string): string {
+  const colors: Record<string, string> = {
+    positron: "#dadad4",
+    liberty: "#cfe2c8",
+    bright: "#ffd560",
+    dark: "#2a2f3a",
+    fiord: "#45516e",
+    satellite: "#1a3b5c",
+    "esri-clarity": "#1f3a52",
+    sentinel2: "#1f2c3a",
+    nimbo: "#152a4c",
+    "glad-landsat": "#1f2a40",
+    topo: "#a8c890",
+    "esri-topo": "#cdb98c",
+    hillshade: "#bfbfbf",
+    "esri-shaded-relief": "#b39764",
+    "esri-terrain-base": "#c9d9b0",
+    "esri-natgeo": "#d4a86a",
+    cyclosm: "#f3eee0",
+    humanitarian: "#f6d7c1",
+    custom: "#aaa",
+    mbtiles: "#e8b070",
+  };
+  return colors[id] ?? "#ccc";
+}
+
+// ── Style picker ──────────────────────────────────────────────────────────
+// `new` (not createElement) so the StylePicker import is a value reference —
+// otherwise the bundler drops it and its customElements.define side-effect.
+const stylePicker = new StylePicker();
+stylePicker.init({
+  onSelectStyle: (s) => setStyle(s),
+  onSelectMbtiles: (file) => loadMbtilesFile(file),
+  isMobile,
+});
+overlayHost.appendChild(stylePicker.el);
+styleChip.addEventListener("click", () => {
+  const c = bboxMap.map.getCenter();
+  stylePicker.open(currentStyle.id, [c.lng, c.lat]);
+});
+
+// ── Download modal ────────────────────────────────────────────────────────
+const downloadModal = new DownloadModal();
+downloadModal.init({
+  isMobile,
+  onDownload: (req, callbacks) => startDownload(req, callbacks),
+});
+overlayHost.appendChild(downloadModal.el);
+downloadBtn.addEventListener("click", () => {
+  // currentGeoBbox is populated as soon as the map first lays out; if a click
+  // beats that race, fall back to whatever the map can derive right now.
+  const bbox = currentGeoBbox ?? bboxMap.getGeoBbox();
+  if (!bbox) return;
+  downloadModal.open({
+    style: currentStyle,
+    geoBbox: bbox,
+    currentMapZoom,
   });
 });
 
-const style: StyleSpecification = {
-  version: 8,
-  sources: {},
-  layers: [
-    {
-      id: "background",
-      type: "background",
-      paint: {
-        "background-color": "#222",
-      },
-    },
-  ],
-};
-
-const mapPromise = pEvent(window, "load")
-  .then(() => import("maplibre-gl"))
-  .then(({ default: maplibre }) => {
-    maplibre.addProtocol(
-      "mbtiles",
-      createProtocolHandler(api.getTile.bind(api))
-    );
-    const map = new maplibre.Map({
-      container: "map",
-      center: [0, 0],
-      style,
-      zoom: 2,
-      attributionControl: false,
-      dragRotate: false,
-    });
-    // Expose for e2e tests
-    (window as any).maplibreMap = map;
-    return map;
-  });
-
-// --- Streaming download ---
-// Creates a MessageChannel whose ports connect the web worker directly to the
-// service worker. Data flows worker → MessagePort → SW → browser download,
-// without passing through the main thread. Based on the pattern from
-// native-file-system-adapter by jimmywarting.
-
-/** Wait for the worker to signal SMP generation is complete */
-function waitForSmpComplete(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const handler = (event: MessageEvent) => {
-      if (event.data.type === "smpComplete") {
-        worker.removeEventListener("message", handler);
-        resolve();
-      } else if (event.data.type === "smpError") {
-        worker.removeEventListener("message", handler);
-        reject(new Error(event.data.error));
-      }
-    };
-    worker.addEventListener("message", handler);
-  });
+// ── Style switching ───────────────────────────────────────────────────────
+function setStyle(style: AppStyle) {
+  currentStyle = style;
+  updateStyleChip();
+  attribution.setStyle(style);
+  bboxMap.setStyle(style);
+  persistSelected(style);
 }
 
-/** Start SMP generation in the worker, streaming result to a download */
-async function startSmpDownload(fileName: string) {
-  const done = waitForSmpComplete();
-
-  const sw = await navigator.serviceWorker?.getRegistration();
-  if (!sw?.active) {
-    throw new Error("Service worker not available for download");
+function persistSelected(style: AppStyle) {
+  if ("isMbtiles" in style && style.isMbtiles) {
+    // Don't persist mbtiles — OPFS file is gone after reload.
+    saveSelected(null);
+    return;
   }
+  if (style.id.startsWith("qms-")) {
+    // QMS styles aren't persisted — the catalogue isn't available at boot.
+    saveSelected(null);
+    return;
+  }
+  if (style.id === "custom") {
+    saveSelected({ kind: "recent", id: recentIdForUrl(style.url) });
+  } else {
+    saveSelected({ kind: "preset", id: style.id });
+  }
+}
 
+// ── MBTiles flow ──────────────────────────────────────────────────────────
+async function loadMbtilesFile(file: File) {
+  const metaP = new Promise<Record<string, any>>((resolve) => {
+    const h = (event: MessageEvent) => {
+      if (event.data?.type === "metadata") {
+        worker.removeEventListener("message", h);
+        resolve(event.data.payload);
+      }
+    };
+    worker.addEventListener("message", h);
+  });
+  worker.postMessage({ type: "file", payload: file });
+  const metadata = await metaP;
+  const isVector = metadata.format === "pbf";
+
+  const sources: StyleSpecification["sources"] = {
+    mbtiles: {
+      type: isVector ? "vector" : "raster",
+      tiles: ["mbtiles://./{z}/{x}/{y}"],
+      tileSize: isVector ? 512 : 256,
+      bounds: metadata.bounds,
+      minzoom: metadata.minzoom,
+      maxzoom: metadata.maxzoom,
+    },
+  };
+
+  const layers: StyleSpecification["layers"] = isVector
+    ? [
+        {
+          id: "background",
+          type: "background",
+          paint: { "background-color": "#fafafa" },
+        },
+        ...layerStyles(metadata.vector_layers || []),
+      ]
+    : [
+        {
+          id: "background",
+          type: "background",
+          paint: { "background-color": "#222" },
+        },
+        { id: "mbtiles", type: "raster", source: "mbtiles" },
+      ];
+
+  const spec: StyleSpecification = {
+    version: 8,
+    sources,
+    layers,
+  };
+
+  const mbtilesStyle: MbtilesStyle = {
+    id: "mbtiles",
+    name: file.name,
+    desc: "Local .mbtiles file",
+    url: "mbtiles://./",
+    kind: isVector ? "vector" : "raster",
+    isMbtiles: true,
+    spec,
+    maxZoom:
+      typeof metadata.maxzoom === "number" ? metadata.maxzoom : undefined,
+    attribution:
+      typeof metadata.attribution === "string" && metadata.attribution
+        ? metadata.attribution
+        : "Local .mbtiles file.",
+    license: "open",
+  };
+  setStyle(mbtilesStyle);
+  if (Array.isArray(metadata.bounds) && metadata.bounds.length === 4) {
+    bboxMap.fitBounds(
+      [
+        [metadata.bounds[0], metadata.bounds[1]],
+        [metadata.bounds[2], metadata.bounds[3]],
+      ],
+      false,
+    );
+  }
+}
+
+// ── Download orchestration ────────────────────────────────────────────────
+function startDownload(
+  req: {
+    style: AppStyle;
+    bbox: GeoBbox;
+    maxZoom: number;
+    name: string;
+    description: string;
+  },
+  callbacks: {
+    onProgress: (p: { fraction: number; done?: boolean }) => void;
+    onError: (msg: string) => void;
+  },
+): DownloadController {
+  let cancelled = false;
+  const fileName =
+    (req.name.replace(/[^a-z0-9-_ ]/gi, "_").trim() || "map") + ".smp";
+
+  (async () => {
+    try {
+      // Build progress + completion handlers attached to the worker.
+      const onComplete = waitForSmpComplete(
+        (fraction) => {
+          if (!cancelled) callbacks.onProgress({ fraction });
+        },
+        (err) => {
+          if (!cancelled) callbacks.onError(err);
+        },
+      );
+
+      const channel = await prepareSwDownload(fileName);
+      const style = req.style;
+      if ("isMbtiles" in style && style.isMbtiles) {
+        worker.postMessage(
+          { type: "generateSmpFromMbtiles", port: channel.workerPort },
+          [channel.workerPort],
+        );
+      } else {
+        const accessToken =
+          "accessToken" in style ? style.accessToken : undefined;
+        const message: any = {
+          type: "generateSmpFromStyle",
+          port: channel.workerPort,
+          bbox: [
+            req.bbox.west,
+            req.bbox.south,
+            req.bbox.east,
+            req.bbox.north,
+          ],
+          maxZoom: req.maxZoom,
+          accessToken,
+        };
+        const inlineSpec = "spec" in style && style.spec ? style.spec : null;
+        if (inlineSpec) {
+          message.styleSpec = inlineSpec;
+        } else if (isTileUrlTemplate(style.url)) {
+          // Tile URL template — wrap into a basic raster style, carrying the
+          // source's subdomains + tile scheme (xyz/tms) to the downloader.
+          message.styleSpec = rasterStyleForTileUrl(
+            style.url,
+            "subdomains" in style ? style.subdomains : undefined,
+            "scheme" in style ? style.scheme : undefined,
+          );
+        } else {
+          message.styleUrl = style.url;
+        }
+        worker.postMessage(message, [channel.workerPort]);
+      }
+
+      await onComplete;
+      if (!cancelled) callbacks.onProgress({ fraction: 1, done: true });
+    } catch (err) {
+      if (!cancelled) callbacks.onError((err as Error).message);
+    }
+  })();
+
+  return {
+    cancel() {
+      cancelled = true;
+    },
+  };
+}
+
+interface SwDownloadChannel {
+  workerPort: MessagePort;
+}
+
+/** Bind a download URL in the service worker, return the worker-side port. */
+async function prepareSwDownload(fileName: string): Promise<SwDownloadChannel> {
+  const sw = await navigator.serviceWorker?.getRegistration();
+  if (!sw?.active) throw new Error("Service worker not available");
   const channel = new MessageChannel();
   const encodedName = encodeURIComponent(fileName)
     .replace(
@@ -303,92 +594,98 @@ async function startSmpDownload(fileName: string) {
       (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
     )
     .replace(/\*/g, "%2A");
-
   const headers = {
     "content-disposition": "attachment; filename*=UTF-8''" + encodedName,
     "content-type": "application/octet-stream",
   };
-
   sw.active.postMessage(
     { url: sw.scope + encodedName, headers, readablePort: channel.port1 },
     [channel.port1],
   );
 
-  worker.postMessage(
-    { type: "generateSmp", port: channel.port2 },
-    [channel.port2],
-  );
-
+  // Trigger the browser download by navigating a hidden iframe to the URL.
   const iframe = document.createElement("iframe");
   iframe.hidden = true;
   iframe.src = sw.scope + encodedName;
   document.body.appendChild(iframe);
 
-  await done;
+  return { workerPort: channel.port2 };
 }
 
-class CloseControl implements IControl {
-  #container: HTMLDivElement | undefined;
-  #onClick: (ev: MouseEvent) => void;
-
-  constructor(onClick: (ev: MouseEvent) => void) {
-    this.#onClick = onClick;
-  }
-  onAdd() {
-    this.#container = document.createElement("div");
-    this.#container.className = "maplibregl-ctrl maplibregl-ctrl-group";
-    const button = document.createElement("button");
-    button.className = "maplibregl-ctrl-icon";
-    button.title = "Close";
-    button.textContent = "\u2716\uFE0F";
-    button.onclick = this.#onClick;
-    this.#container.appendChild(button);
-    return this.#container;
-  }
-
-  onRemove() {
-    this.#container?.parentNode?.removeChild(this.#container);
-  }
-}
-
-class SaveControl implements IControl {
-  #container: HTMLDivElement | undefined;
-  #fileName: string;
-
-  constructor({ fileName }: { fileName: string }) {
-    this.#fileName = fileName;
-  }
-
-  onAdd() {
-    this.#container = document.createElement("div");
-    this.#container.className = "maplibregl-ctrl maplibregl-ctrl-group";
-    const btn = document.createElement("button");
-    btn.id = "download-smp";
-    btn.className =
-      "maplibregl-ctrl-icon block w-[29px] h-[29px] cursor-pointer border-0 bg-transparent p-0";
-    btn.title = "Download as SMP";
-    const downloadIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-[19px] h-[19px] m-[5px]"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-    const spinnerIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="w-[19px] h-[19px] m-[5px] animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
-    btn.innerHTML = downloadIcon;
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      btn.innerHTML = spinnerIcon;
-      try {
-        const smpFileName =
-          this.#fileName.replace(/\.[^.]+$/, "") + ".smp";
-        await startSmpDownload(smpFileName);
-      } catch (err) {
-        console.error("SMP download failed:", err);
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = downloadIcon;
+function waitForSmpComplete(
+  onProgress: (fraction: number) => void,
+  onError: (msg: string) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handler = (event: MessageEvent) => {
+      const data = event.data;
+      if (data.type === "smpProgress") {
+        onProgress(data.fraction);
+      } else if (data.type === "smpComplete") {
+        worker.removeEventListener("message", handler);
+        resolve();
+      } else if (data.type === "smpError") {
+        worker.removeEventListener("message", handler);
+        onError(data.error);
+        reject(new Error(data.error));
       }
-    });
-    this.#container.appendChild(btn);
-    return this.#container;
-  }
-
-  onRemove() {
-    this.#container?.parentNode?.removeChild(this.#container);
-  }
+    };
+    worker.addEventListener("message", handler);
+  });
 }
+
+// ── Drag-drop mbtiles anywhere ────────────────────────────────────────────
+const dropOverlay = document.getElementById("drop-overlay")!;
+let dragCounter = 0;
+
+document.addEventListener("dragenter", (e) => {
+  if (isMobile()) return;
+  if (!e.dataTransfer?.types?.includes("Files")) return;
+  e.preventDefault();
+  dragCounter++;
+  if (dragCounter === 1) dropOverlay.classList.remove("hidden");
+});
+document.addEventListener("dragover", (e) => {
+  if (isMobile()) return;
+  if (!e.dataTransfer?.types?.includes("Files")) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
+document.addEventListener("dragleave", (e) => {
+  if (isMobile()) return;
+  e.preventDefault();
+  dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0) dropOverlay.classList.add("hidden");
+});
+document.addEventListener("drop", (e) => {
+  if (isMobile()) return;
+  e.preventDefault();
+  dragCounter = 0;
+  dropOverlay.classList.add("hidden");
+  const files = e.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  // GeoJSON files become overlays; an .mbtiles file replaces the basemap.
+  const geojson = Array.from(files).filter(isGeoJSONFile);
+  if (geojson.length > 0) {
+    void overlayPanel.addFiles(geojson);
+    return;
+  }
+  const mbtiles = Array.from(files).find((f) =>
+    /\.(mbtiles|sqlite|sqlite3|db)$/i.test(f.name),
+  );
+  if (mbtiles) loadMbtilesFile(mbtiles);
+});
+
+// ── Resize re-evaluation (mobile vs desktop transitions) ──────────────────
+window.addEventListener("resize", () => {
+  bboxMap.setBottomInset(isMobile() ? MOBILE_BOTTOM_INSET : 0);
+  overlayPanel.setMobile(isMobile());
+});
+
+// ── PWA install hint ──────────────────────────────────────────────────────
+// Renders a one-time card-shaped banner at the bottom of the screen, sitting
+// over the action card so iOS users (where there's no programmatic install
+// path) see the affordance immediately. Dismissal persists; the help popover
+// keeps a permanent entry for users who change their mind.
+const installBanner = new InstallBanner();
+overlayHost.appendChild(installBanner.el);

@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "filter-obj": "^6.1.0",
+    "lit": "^3.3.3",
     "maplibre-gl": "^5.11.0",
     "mbtiles-reader": "^2.0.1",
     "p-defer": "^4.0.1",

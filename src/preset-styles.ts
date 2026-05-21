@@ -97,9 +97,10 @@ export const VERDICT_ICON_PATHS: Record<UsageVerdict, string> = {
 };
 
 export const CATEGORY_LABELS: Record<StyleCategory, string> =
-  Object.fromEntries(
-    PRESET_CATEGORIES.map((c) => [c.id, c.label]),
-  ) as Record<StyleCategory, string>;
+  Object.fromEntries(PRESET_CATEGORIES.map((c) => [c.id, c.label])) as Record<
+    StyleCategory,
+    string
+  >;
 
 export interface PresetStyle {
   id: string;
@@ -553,34 +554,6 @@ export const PRESET_STYLES: PresetStyle[] = [
 
   // ── Topographic ─────────────────────────────────────────────────────────
   {
-    id: "topo",
-    name: "OpenTopoMap",
-    desc: "Topographic raster from OpenStreetMap.",
-    url: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
-    restrictions: {
-      offline: {
-        verdict: "prohibited",
-        note: "OpenTopoMap's community tile server forbids mass downloads — bulk-caching tiles is not permitted.",
-      },
-      commercial: {
-        verdict: "conditional",
-        note: "The CC-BY-SA map style allows commercial use, but the free tile server is for light interactive use only.",
-      },
-      redistribution: {
-        verdict: "conditional",
-        note: "The style is CC-BY-SA 3.0 — any redistribution must keep the same share-alike licence and attribution.",
-      },
-    },
-    kind: "raster",
-    tone: "light",
-    category: "terrain",
-    attribution:
-      'Map data: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM · Style: © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
-    license: "attribution",
-    termsUrl: "https://opentopomap.org/about",
-    previewTileUrl: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
-  },
-  {
     id: "esri-topo",
     name: "Esri Topographic",
     desc: "Esri World Topographic — contours, hillshade, labels.",
@@ -690,65 +663,6 @@ export const PRESET_STYLES: PresetStyle[] = [
     license: "attribution",
     termsUrl: "https://mapterhorn.com",
     previewTileUrl: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
-  },
-
-  // ── Activity ────────────────────────────────────────────────────────────
-  {
-    id: "cyclosm",
-    name: "CyclOSM",
-    desc: "Bicycle-oriented map with cycle routes & infrastructure.",
-    url: "https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
-    restrictions: {
-      offline: {
-        verdict: "prohibited",
-        note: "CyclOSM runs on OpenStreetMap France community infrastructure — bulk pre-fetching of tiles is not permitted.",
-      },
-      commercial: {
-        verdict: "conditional",
-        note: "The CyclOSM style is open, but heavy or automated use of the free tile server is not permitted.",
-      },
-      redistribution: {
-        verdict: "prohibited",
-        note: "Building tile archives for redistribution is explicitly disallowed by the tile usage policy.",
-      },
-    },
-    kind: "raster",
-    tone: "light",
-    category: "activity",
-    attribution:
-      '© <a href="https://www.cyclosm.org">CyclOSM</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    license: "attribution",
-    termsUrl: "https://www.cyclosm.org/",
-    previewTileUrl:
-      "https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
-  },
-  {
-    id: "humanitarian",
-    name: "Humanitarian",
-    desc: "HOT humanitarian style — emphasises infrastructure & POIs.",
-    url: "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-    restrictions: {
-      offline: {
-        verdict: "prohibited",
-        note: "HOT tiles run on OpenStreetMap France community infrastructure — bulk-caching tiles offline is not permitted.",
-      },
-      commercial: {
-        verdict: "conditional",
-        note: "The OpenStreetMap data is ODbL, but the free tile server is for light interactive use, not commercial bulk consumption.",
-      },
-      redistribution: {
-        verdict: "conditional",
-        note: "OpenStreetMap data is redistributable under ODbL, but tiles fetched against the server's no-bulk policy are not.",
-      },
-    },
-    kind: "raster",
-    tone: "light",
-    category: "activity",
-    attribution:
-      '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · Style: © <a href="https://www.hotosm.org">Humanitarian OpenStreetMap Team</a>',
-    license: "attribution",
-    termsUrl: "https://www.openstreetmap.fr/mentions-legales/",
-    previewTileUrl: "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
   },
 ];
 
@@ -913,9 +827,7 @@ export function styleForTileJson(
 }
 
 /** Resolve an AppStyle to something MapLibre's `setStyle` can accept. */
-export function buildMapStyle(
-  style: AppStyle,
-): string | StyleSpecification {
+export function buildMapStyle(style: AppStyle): string | StyleSpecification {
   if ("spec" in style && style.spec) return style.spec;
   if (isTileUrlTemplate(style.url)) {
     return rasterStyleForTileUrl(

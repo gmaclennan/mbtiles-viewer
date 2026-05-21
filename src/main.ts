@@ -37,6 +37,8 @@ import { HelpButton, viewportDiagnostics } from "./help-button.ts";
 import { InstallBanner } from "./install-banner.ts";
 import { StylePicker } from "./style-picker.ts";
 import { DownloadModal, type DownloadController } from "./download-modal.ts";
+import { OverlayPanel } from "./overlay-panel.ts";
+import { isGeoJSONFile } from "./overlay-model.ts";
 import { layerStyles } from "./layer-styles.ts";
 import createProtocolHandler from "./protocol-handler.ts";
 import {
@@ -238,11 +240,20 @@ const topRight = document.createElement("div");
 topRight.className = "va-top-right";
 overlayHost.appendChild(topRight);
 
-const attribution = new AttributionButton({ onOpen: () => help.close() });
-const help = new HelpButton({ onOpen: () => attribution.close() });
+const attribution = new AttributionButton();
+const help = new HelpButton();
+attribution.init({ onOpen: () => help.close() });
+help.init({ onOpen: () => attribution.close() });
 topRight.appendChild(attribution.el);
 topRight.appendChild(help.el);
 attribution.setStyle(currentStyle);
+
+// ── Overlays (GeoJSON layers, desktop only) ───────────────────────────────
+// `new` (not createElement) so the import is a value reference the bundler
+// keeps, preserving the customElements.define side-effect.
+const overlayPanel = new OverlayPanel();
+overlayPanel.init({ map: bboxMap.map, isMobile });
+overlayHost.appendChild(overlayPanel.el);
 
 // ── Bottom action card ────────────────────────────────────────────────────
 const card = document.createElement("div");
@@ -280,13 +291,19 @@ cardRow.appendChild(downloadBtn);
 // When the bounds are locked, the bbox is anchored to these geo coords and
 // follows the map on screen; input edits flow straight into the locked extent.
 let lockedBounds: GeoBbox | null = null;
-const boundsPanel = new BoundsPanel({
+const boundsPanel = new BoundsPanel();
+boundsPanel.init({
   onApply: (next) => {
+    // After an inputs-driven edit, settle the map onto the new bbox the same
+    // way a mouse resize does.
     if (lockedBounds) {
       lockedBounds = bboxMap.setLockedGeoBbox(next) ?? next;
+      bboxMap.refitToBbox();
       return lockedBounds;
     }
-    return bboxMap.setGeoBboxExact(next);
+    const result = bboxMap.setGeoBboxExact(next);
+    bboxMap.refitToBbox();
+    return result;
   },
   getMinGeoSpan: () => bboxMap.getMinGeoSpan(),
   onLock: () => {
@@ -341,7 +358,10 @@ function thumbColor(id: string): string {
 }
 
 // ── Style picker ──────────────────────────────────────────────────────────
-const stylePicker = new StylePicker({
+// `new` (not createElement) so the StylePicker import is a value reference —
+// otherwise the bundler drops it and its customElements.define side-effect.
+const stylePicker = new StylePicker();
+stylePicker.init({
   onSelectStyle: (s) => setStyle(s),
   onSelectMbtiles: (file) => loadMbtilesFile(file),
   isMobile,
@@ -353,7 +373,8 @@ styleChip.addEventListener("click", () => {
 });
 
 // ── Download modal ────────────────────────────────────────────────────────
-const downloadModal = new DownloadModal({
+const downloadModal = new DownloadModal();
+downloadModal.init({
   isMobile,
   onDownload: (req, callbacks) => startDownload(req, callbacks),
 });
@@ -532,10 +553,10 @@ function startDownload(
           message.styleSpec = inlineSpec;
         } else if (isTileUrlTemplate(style.url)) {
           // Tile URL template — wrap into a basic raster style, carrying the
-          // source's tile scheme (xyz/tms) through to the downloader.
+          // source's subdomains + tile scheme (xyz/tms) to the downloader.
           message.styleSpec = rasterStyleForTileUrl(
             style.url,
-            undefined,
+            "subdomains" in style ? style.subdomains : undefined,
             "scheme" in style ? style.scheme : undefined,
           );
         } else {
@@ -641,15 +662,24 @@ document.addEventListener("drop", (e) => {
   e.preventDefault();
   dragCounter = 0;
   dropOverlay.classList.add("hidden");
-  const file = e.dataTransfer?.files?.[0];
-  if (file && /\.(mbtiles|sqlite|sqlite3|db)$/i.test(file.name)) {
-    loadMbtilesFile(file);
+  const files = e.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  // GeoJSON files become overlays; an .mbtiles file replaces the basemap.
+  const geojson = Array.from(files).filter(isGeoJSONFile);
+  if (geojson.length > 0) {
+    void overlayPanel.addFiles(geojson);
+    return;
   }
+  const mbtiles = Array.from(files).find((f) =>
+    /\.(mbtiles|sqlite|sqlite3|db)$/i.test(f.name),
+  );
+  if (mbtiles) loadMbtilesFile(mbtiles);
 });
 
 // ── Resize re-evaluation (mobile vs desktop transitions) ──────────────────
 window.addEventListener("resize", () => {
   bboxMap.setBottomInset(isMobile() ? MOBILE_BOTTOM_INSET : 0);
+  overlayPanel.setMobile(isMobile());
 });
 
 // ── PWA install hint ──────────────────────────────────────────────────────

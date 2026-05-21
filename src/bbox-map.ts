@@ -343,6 +343,37 @@ export class BboxMap {
     });
   }
 
+  /** Re-fit the map so the current bbox settles at the standard inset margin —
+   *  the same animation the map does after a mouse resize. Used after the
+   *  bounds inputs commit a new extent. */
+  refitToBbox() {
+    if (!this.mapReady) return;
+    if (this.opts.lockedGeoBbox) {
+      // Locked: pan/zoom so the locked extent fills the viewport at the inset.
+      // The bbox follows the map automatically (the move handler re-syncs it).
+      const geo = this.opts.lockedGeoBbox;
+      const inset = this.computeInsetPx();
+      this.map.fitBounds(
+        [
+          [geo.west, geo.south],
+          [geo.east, geo.north],
+        ],
+        {
+          padding: {
+            top: inset,
+            left: inset,
+            right: inset,
+            bottom: inset + this.opts.bottomInset,
+          },
+          animate: true,
+          duration: 600,
+        },
+      );
+    } else {
+      this.maybeRefit();
+    }
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   /** Equal pixel margin used on all four sides of the usable area. */

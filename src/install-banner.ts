@@ -1,3 +1,6 @@
+import { html, nothing, type TemplateResult } from "lit";
+import { LightElement } from "./lit-base.ts";
+
 /** Browser-fired beforeinstallprompt event (Chromium-only). */
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -36,35 +39,49 @@ function rememberDismissed() {
   }
 }
 
+/** Down-arrow-into-device glyph shared by both banner variants. */
+function bannerIcon(): TemplateResult {
+  return html`<div class="install-banner-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="3" width="16" height="18" rx="3" />
+      <path d="M12 8v6m0 0l-2.5-2.5M12 14l2.5-2.5" />
+    </svg>
+  </div>`;
+}
+
 /** Mounts a one-time install hint at the bottom of the screen. The banner
  *  occupies the same layout slot as the action card (so it sits *over* the
  *  card on first visit, making the install affordance unmissable on iOS).
  *  Dismissing collapses it for good. */
-export class InstallBanner {
-  readonly el: HTMLDivElement;
+export class InstallBanner extends LightElement {
+  static properties = {
+    mode: { state: true },
+  };
+
+  /** Which banner variant to show — `null` means the banner is hidden. */
+  declare mode: "ios" | "chromium" | null;
+
   private deferredPrompt: BeforeInstallPromptEvent | null = null;
-  private rendered = false;
 
   constructor() {
-    this.el = document.createElement("div");
-    this.el.className = "install-banner hidden";
+    super();
+    this.mode = null;
 
     if (alreadyHandled()) return;
 
-    const ios = isIos();
-    if (ios) {
+    if (isIos()) {
       // iOS has no programmatic install path — show right away.
-      this.show("ios");
+      this.mode = "ios";
       return;
     }
 
     // Chromium fires beforeinstallprompt asynchronously, sometimes seconds
-    // after load. Wait for it and surface the banner once we have a prompt
-    // to drive.
+    // after load. Wait for it and surface the banner once we have a prompt.
     window.addEventListener("beforeinstallprompt", (e) => {
       e.preventDefault();
       this.deferredPrompt = e as BeforeInstallPromptEvent;
-      if (!alreadyHandled()) this.show("chromium");
+      if (!alreadyHandled()) this.mode = "chromium";
     });
     window.addEventListener("appinstalled", () => {
       this.deferredPrompt = null;
@@ -72,20 +89,18 @@ export class InstallBanner {
     });
   }
 
-  private show(mode: "ios" | "chromium") {
-    if (this.rendered) return;
-    this.rendered = true;
-    this.el.classList.remove("hidden");
-    this.el.innerHTML =
-      mode === "ios" ? this.iosMarkup() : this.chromiumMarkup();
-    this.el
-      .querySelector<HTMLButtonElement>(".install-banner-dismiss")
-      ?.addEventListener("click", () => this.dismiss({ persist: true }));
-    if (mode === "chromium") {
-      this.el
-        .querySelector<HTMLButtonElement>(".install-banner-cta")
-        ?.addEventListener("click", () => this.runChromiumPrompt());
-    }
+  get el(): this {
+    return this;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.classList.add("install-banner");
+    if (this.mode === null) this.classList.add("hidden");
+  }
+
+  protected updated() {
+    this.classList.toggle("hidden", this.mode === null);
   }
 
   private async runChromiumPrompt() {
@@ -100,40 +115,44 @@ export class InstallBanner {
 
   private dismiss({ persist }: { persist: boolean }) {
     if (persist) rememberDismissed();
-    this.el.classList.add("hidden");
-    this.el.innerHTML = "";
-    this.rendered = false;
+    this.mode = null;
   }
 
-  private chromiumMarkup() {
-    return `
-      <div class="install-banner-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="4" y="3" width="16" height="18" rx="3" />
-          <path d="M12 8v6m0 0l-2.5-2.5M12 14l2.5-2.5" />
-        </svg>
-      </div>
+  render() {
+    if (this.mode === null) return nothing;
+    return this.mode === "ios"
+      ? this.iosTemplate()
+      : this.chromiumTemplate();
+  }
+
+  private chromiumTemplate(): TemplateResult {
+    return html`
+      ${bannerIcon()}
       <div class="install-banner-body">
         <div class="install-banner-title">Install Map Downloader</div>
         <div class="install-banner-text">
           Add this app to your device for full-screen, offline-ready use.
         </div>
       </div>
-      <button class="install-banner-cta" type="button">Install</button>
-      <button class="install-banner-dismiss" type="button" aria-label="Dismiss">×</button>
+      <button
+        class="install-banner-cta"
+        type="button"
+        @click=${() => this.runChromiumPrompt()}
+      >
+        Install
+      </button>
+      <button
+        class="install-banner-dismiss"
+        type="button"
+        aria-label="Dismiss"
+        @click=${() => this.dismiss({ persist: true })}
+      >×</button>
     `;
   }
 
-  private iosMarkup() {
-    return `
-      <div class="install-banner-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="4" y="3" width="16" height="18" rx="3" />
-          <path d="M12 8v6m0 0l-2.5-2.5M12 14l2.5-2.5" />
-        </svg>
-      </div>
+  private iosTemplate(): TemplateResult {
+    return html`
+      ${bannerIcon()}
       <div class="install-banner-body">
         <div class="install-banner-title">Add to Home Screen</div>
         <div class="install-banner-text">
@@ -148,7 +167,16 @@ export class InstallBanner {
           in Safari, then <b>Add to Home Screen</b> for offline use.
         </div>
       </div>
-      <button class="install-banner-dismiss" type="button" aria-label="Dismiss">×</button>
+      <button
+        class="install-banner-dismiss"
+        type="button"
+        aria-label="Dismiss"
+        @click=${() => this.dismiss({ persist: true })}
+      >×</button>
     `;
   }
+}
+
+if (!customElements.get("install-banner")) {
+  customElements.define("install-banner", InstallBanner);
 }

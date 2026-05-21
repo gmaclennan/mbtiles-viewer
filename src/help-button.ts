@@ -1,3 +1,7 @@
+import { html, nothing, type TemplateResult } from "lit";
+import { classMap } from "lit/directives/class-map.js";
+import { LightElement } from "./lit-base.ts";
+
 /** Browser-fired beforeinstallprompt event (Chromium-only). The DOM lib types
  *  don't include it, so we model the bits we touch. */
 interface BeforeInstallPromptEvent extends Event {
@@ -7,7 +11,8 @@ interface BeforeInstallPromptEvent extends Event {
 
 const isStandalone = () =>
   window.matchMedia("(display-mode: standalone)").matches ||
-  ("standalone" in navigator && (navigator as { standalone?: boolean }).standalone === true);
+  ("standalone" in navigator &&
+    (navigator as { standalone?: boolean }).standalone === true);
 
 const isIos = () =>
   /iPad|iPhone|iPod/.test(navigator.userAgent) &&
@@ -18,32 +23,22 @@ export interface HelpButtonOptions {
   onOpen?: () => void;
 }
 
-export class HelpButton {
-  readonly el: HTMLDivElement;
-  private btn: HTMLButtonElement;
-  private popoverWrap: HTMLDivElement | null = null;
-  private open = false;
-  private opts: HelpButtonOptions;
+export class HelpButton extends LightElement {
+  static properties = {
+    open: { state: true },
+    deferredPrompt: { state: true },
+  };
+
+  declare open: boolean;
   /** Stashed beforeinstallprompt event so the user can install on demand. */
-  private deferredPrompt: BeforeInstallPromptEvent | null = null;
+  declare deferredPrompt: BeforeInstallPromptEvent | null;
 
-  constructor(opts: HelpButtonOptions = {}) {
-    this.opts = opts;
-    this.el = document.createElement("div");
-    this.el.className = "help-root";
+  private opts: HelpButtonOptions = {};
 
-    this.btn = document.createElement("button");
-    this.btn.className = "help-btn";
-    this.btn.setAttribute("aria-label", "Help");
-    this.btn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
-        stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-        <circle cx="8" cy="8" r="6.5" />
-        <path d="M6.2 6.2c0-1 .8-1.8 1.8-1.8s1.8.8 1.8 1.8c0 .9-1.8 1.3-1.8 2.4" />
-        <circle cx="8" cy="11.2" r=".5" fill="currentColor" />
-      </svg>`;
-    this.btn.addEventListener("click", () => this.toggle());
-    this.el.appendChild(this.btn);
+  constructor() {
+    super();
+    this.open = false;
+    this.deferredPrompt = null;
 
     // Capture the install prompt for Chromium so the help-popover Install
     // button can surface it on-demand. iOS doesn't fire this event — there
@@ -58,109 +53,157 @@ export class HelpButton {
     });
   }
 
-  private toggle() {
-    if (this.open) {
-      this.close();
-    } else {
-      this.show();
-    }
+  /** Inject runtime options. Custom-element constructors take no arguments. */
+  init(opts: HelpButtonOptions = {}): this {
+    this.opts = opts;
+    return this;
   }
 
-  private show() {
-    this.opts.onOpen?.();
-    this.open = true;
-    this.btn.classList.add("help-btn-active");
-    this.popoverWrap = document.createElement("div");
-    this.popoverWrap.className = "help-popover-wrap";
-    this.popoverWrap.addEventListener("click", () => this.close());
-
-    const popover = document.createElement("div");
-    popover.className = "help-popover";
-    popover.addEventListener("click", (e) => e.stopPropagation());
-    popover.innerHTML = `
-      <div class="help-popover-header">
-        <div class="help-popover-title">About this tool</div>
-        <button class="help-popover-close" aria-label="Close">×</button>
-      </div>
-      <p>
-        Pick a region of the world and download its map tiles for
-        <b>offline use</b> — useful for fieldwork, hiking, or low-bandwidth
-        environments.
-      </p>
-      <ol>
-        <li>Pan and zoom the map to the area you want.</li>
-        <li>Drag the bbox handles to fine-tune the region, or type bounds directly.</li>
-        <li>Click <b>Download</b> to choose a max zoom and save the package.</li>
-      </ol>
-      <div class="help-popover-tip">
-        Tip: smaller area + lower max zoom = smaller download.
-      </div>
-      <div class="help-popover-version">${
-        (window as unknown as { __APP_VERSION__?: string })
-          .__APP_VERSION__ ?? `build ${__BUILD_VERSION__}`
-      }</div>
-    `;
-    popover
-      .querySelector(".help-popover-close")
-      ?.addEventListener("click", () => this.close());
-
-    const installSection = this.buildInstallSection();
-    if (installSection) popover.appendChild(installSection);
-
-    this.popoverWrap.appendChild(popover);
-    this.el.appendChild(this.popoverWrap);
+  get el(): this {
+    return this;
   }
 
-  /** Returns the install section, or null if installation isn't applicable
-   *  (already in standalone mode, or on a desktop browser without a deferred
-   *  install prompt). */
-  private buildInstallSection(): HTMLElement | null {
-    if (isStandalone()) return null;
-    const ios = isIos();
-    if (!ios && !this.deferredPrompt) return null;
-
-    const wrap = document.createElement("div");
-    wrap.className = "help-install";
-    if (ios) {
-      wrap.innerHTML = `
-        <div class="help-install-title">Install to home screen</div>
-        <p>
-          Tap
-          <svg class="help-install-icon" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8" />
-            <polyline points="16 6 12 2 8 6" />
-            <line x1="12" y1="2" x2="12" y2="15" />
-          </svg>
-          in Safari then <b>Add to Home Screen</b> for full-screen, offline-ready use.
-        </p>`;
-    } else {
-      wrap.innerHTML = `
-        <div class="help-install-title">Install as an app</div>
-        <p>
-          Add this tool to your device for full-screen, offline-ready use.
-        </p>
-        <button class="help-install-btn" type="button">Install</button>`;
-      const btn = wrap.querySelector<HTMLButtonElement>(".help-install-btn");
-      btn?.addEventListener("click", async () => {
-        const dp = this.deferredPrompt;
-        if (!dp) return;
-        await dp.prompt();
-        const { outcome } = await dp.userChoice;
-        if (outcome === "accepted") this.deferredPrompt = null;
-        this.close();
-      });
-    }
-    return wrap;
+  connectedCallback() {
+    super.connectedCallback();
+    this.classList.add("help-root");
   }
 
   close() {
     this.open = false;
-    this.btn.classList.remove("help-btn-active");
-    this.popoverWrap?.remove();
-    this.popoverWrap = null;
   }
+
+  private toggle() {
+    if (this.open) {
+      this.open = false;
+    } else {
+      this.opts.onOpen?.();
+      this.open = true;
+    }
+  }
+
+  private async runInstall() {
+    const dp = this.deferredPrompt;
+    if (!dp) return;
+    await dp.prompt();
+    const { outcome } = await dp.userChoice;
+    if (outcome === "accepted") this.deferredPrompt = null;
+    this.close();
+  }
+
+  render() {
+    return html`
+      <button
+        class=${classMap({ "help-btn": true, "help-btn-active": this.open })}
+        aria-label="Help"
+        @click=${() => this.toggle()}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+          stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <circle cx="8" cy="8" r="6.5" />
+          <path d="M6.2 6.2c0-1 .8-1.8 1.8-1.8s1.8.8 1.8 1.8c0 .9-1.8 1.3-1.8 2.4" />
+          <circle cx="8" cy="11.2" r=".5" fill="currentColor" />
+        </svg>
+      </button>
+      ${this.open ? this.renderPopover() : nothing}
+    `;
+  }
+
+  private renderPopover(): TemplateResult {
+    const version =
+      (window as unknown as { __APP_VERSION__?: string }).__APP_VERSION__ ??
+      `build ${__BUILD_VERSION__}`;
+    return html`
+      <div class="help-popover-wrap" @click=${() => this.close()}>
+        <div class="help-popover" @click=${(e: Event) => e.stopPropagation()}>
+          <div class="help-popover-header">
+            <div class="help-popover-title">About this tool</div>
+            <button
+              class="help-popover-close"
+              aria-label="Close"
+              @click=${() => this.close()}
+            >×</button>
+          </div>
+          <p>
+            Pick a region of the world and download its map tiles for
+            <b>offline use</b> — useful for fieldwork, hiking, or low-bandwidth
+            environments.
+          </p>
+          <div class="help-stepper">
+            <div class="help-step">
+              <div class="help-step-num">1</div>
+              <div class="help-step-text">
+                Pan and zoom the map to the area you want.
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-step-num">2</div>
+              <div class="help-step-text">
+                Drag the bbox handles to fine-tune the region, or type bounds
+                directly.
+              </div>
+            </div>
+            <div class="help-step">
+              <div class="help-step-num">3</div>
+              <div class="help-step-text">
+                Click <b>Download</b> to choose a max zoom and save the
+                package.
+              </div>
+            </div>
+          </div>
+          <div class="help-popover-tip">
+            Tip: smaller area + lower max zoom = smaller download.
+          </div>
+          <div class="help-popover-version">${version}</div>
+          ${this.renderInstallSection()}
+        </div>
+      </div>
+    `;
+  }
+
+  /** The install section, or `nothing` if installation isn't applicable
+   *  (already in standalone mode, or a desktop browser without a deferred
+   *  install prompt). */
+  private renderInstallSection(): TemplateResult | typeof nothing {
+    if (isStandalone()) return nothing;
+    const ios = isIos();
+    if (!ios && !this.deferredPrompt) return nothing;
+    if (ios) {
+      return html`
+        <div class="help-install">
+          <div class="help-install-title">Install to home screen</div>
+          <p>
+            Tap
+            <svg class="help-install-icon" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8" />
+              <polyline points="16 6 12 2 8 6" />
+              <line x1="12" y1="2" x2="12" y2="15" />
+            </svg>
+            in Safari then <b>Add to Home Screen</b> for full-screen,
+            offline-ready use.
+          </p>
+        </div>
+      `;
+    }
+    return html`
+      <div class="help-install">
+        <div class="help-install-title">Install as an app</div>
+        <p>Add this tool to your device for full-screen, offline-ready use.</p>
+        <button
+          class="help-install-btn"
+          type="button"
+          @click=${() => this.runInstall()}
+        >
+          Install
+        </button>
+      </div>
+    `;
+  }
+}
+
+if (!customElements.get("help-button")) {
+  customElements.define("help-button", HelpButton);
 }
 
 /** Dumps every viewport-y measurement we know about. Both the help popover

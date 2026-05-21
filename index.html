@@ -45,7 +45,7 @@
       <div id="map-overlay" class="map-overlay"></div>
     </div>
 
-    <!-- Drop overlay (drag-drop of mbtiles anywhere) -->
+    <!-- Drop overlay (drag-drop of an .mbtiles basemap or .geojson overlay) -->
     <div id="drop-overlay" class="drop-overlay hidden">
       <svg class="drop-overlay-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         stroke-width="1.5">
@@ -53,8 +53,8 @@
               d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"
               transform="rotate(180 12 12)" />
       </svg>
-      <p class="drop-overlay-title">Drop file to open</p>
-      <p class="drop-overlay-sub">.mbtiles, .sqlite, .db</p>
+      <p class="drop-overlay-title">Drop a file</p>
+      <p class="drop-overlay-sub">.mbtiles basemap &nbsp;·&nbsp; .geojson overlay</p>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

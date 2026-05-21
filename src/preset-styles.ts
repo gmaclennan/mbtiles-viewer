@@ -34,6 +34,68 @@ export const LICENSE_COLORS: Record<LicenseBucket, string> = {
   restrictive: "#a83a3a",
 };
 
+/** The usage questions every basemap is checked against. Chosen for what
+ *  actually matters in a tile-downloading app: can tiles be taken offline,
+ *  can the resulting map be used commercially, and can the downloaded package
+ *  be shared on to other people. */
+export type UsageAspect = "offline" | "commercial" | "redistribution";
+
+/** A source's stance on one usage aspect. `unknown` = we couldn't verify it. */
+export type UsageVerdict = "allowed" | "conditional" | "prohibited" | "unknown";
+
+export interface UsageRestriction {
+  verdict: UsageVerdict;
+  /** One short, source-specific sentence explaining the verdict. */
+  note: string;
+}
+
+export type UsageRestrictions = Record<UsageAspect, UsageRestriction>;
+
+/** Render order for the three aspects. */
+export const USAGE_ASPECTS: UsageAspect[] = [
+  "offline",
+  "commercial",
+  "redistribution",
+];
+
+export const USAGE_ASPECT_LABELS: Record<UsageAspect, string> = {
+  offline: "Offline download",
+  commercial: "Commercial use",
+  redistribution: "Redistribution",
+};
+
+export const VERDICT_LABELS: Record<UsageVerdict, string> = {
+  allowed: "Allowed",
+  conditional: "Conditional",
+  prohibited: "Not allowed",
+  unknown: "Unverified",
+};
+
+/** Verdict colours — high-contrast green / orange / red so the three states
+ *  are easy to tell apart at a glance; grey marks an unverified source. */
+export const VERDICT_COLORS: Record<UsageVerdict, string> = {
+  allowed: "#137333",
+  conditional: "#e65100",
+  prohibited: "#c62828",
+  unknown: "#5f6368",
+};
+
+/** Material Design icon (filled, 24×24 viewBox) for each verdict — paired with
+ *  VERDICT_COLORS so the state reads from both shape and colour. */
+export const VERDICT_ICON_PATHS: Record<UsageVerdict, string> = {
+  // check_circle
+  allowed:
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
+  // warning
+  conditional: "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
+  // block
+  prohibited:
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM4 12c0-4.42 3.58-8 8-8 1.85 0 3.55.63 4.9 1.69L5.69 16.9C4.63 15.55 4 13.85 4 12zm8 8c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1C19.37 8.45 20 10.15 20 12c0 4.42-3.58 8-8 8z",
+  // help
+  unknown:
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z",
+};
+
 export const CATEGORY_LABELS: Record<StyleCategory, string> =
   Object.fromEntries(
     PRESET_CATEGORIES.map((c) => [c.id, c.label]),
@@ -52,11 +114,17 @@ export interface PresetStyle {
   attribution: string;
   /** Licence bucket — drives the download-modal acknowledgement gate. */
   license: LicenseBucket;
+  /** Per-aspect usage restrictions (offline download, commercial use,
+   *  redistribution) surfaced in the attribution popover and download modal. */
+  restrictions: UsageRestrictions;
   /** Link to the source's published terms of use. Surfaced in the attribution
    *  popover and the download-modal licence banner. */
   termsUrl?: string;
   /** Raster tile scheme. Defaults to "xyz" when unset. */
   scheme?: TileScheme;
+  /** Values for a `{subdomain}` placeholder in the URL (e.g. Bing's t0–t3).
+   *  Defaults to a/b/c when unset. */
+  subdomains?: string[];
   /** Zoom for the picker preview tile. Defaults to a city-level zoom; lower it
    *  for sources whose tiles are sparse/placeholder at higher zoom. */
   previewZoom?: number;
@@ -65,6 +133,9 @@ export interface PresetStyle {
    *  source URL; for vector styles, it points to a hand-picked raster basemap
    *  with a similar look. */
   previewTileUrl: string;
+  /** Pre-built MapLibre style spec, for styles that aren't a single tile URL
+   *  or style.json (e.g. a hillshade rendered over a raster-DEM source). */
+  spec?: StyleSpecification;
 }
 
 export interface CustomStyle {
@@ -87,6 +158,8 @@ export interface CustomStyle {
   attribution: string;
   /** Custom URLs default to "restrictive" — we can't vouch for the source. */
   license: LicenseBucket;
+  /** Absent for custom URLs — `getRestrictions` falls back to UNKNOWN_RESTRICTIONS. */
+  restrictions?: UsageRestrictions;
   termsUrl?: string;
 }
 
@@ -104,6 +177,8 @@ export interface MbtilesStyle {
   maxZoom?: number;
   attribution: string;
   license: LicenseBucket;
+  /** Absent for loaded files — `getRestrictions` falls back to UNKNOWN_RESTRICTIONS. */
+  restrictions?: UsageRestrictions;
   termsUrl?: string;
 }
 
@@ -121,6 +196,8 @@ export interface QmsStyle {
   category: StyleCategory;
   attribution: string;
   license: LicenseBucket;
+  /** Absent for QMS catalogue entries — `getRestrictions` falls back to UNKNOWN_RESTRICTIONS. */
+  restrictions?: UsageRestrictions;
   termsUrl?: string;
   scheme?: TileScheme;
 }
@@ -131,6 +208,29 @@ export type AppStyle = PresetStyle | CustomStyle | MbtilesStyle | QmsStyle;
 export const CUSTOM_URL_ATTRIBUTION =
   "Custom user-provided source — verify licence with the provider.";
 
+/** Usage restrictions for sources we can't vouch for — custom URLs, QMS
+ *  catalogue entries, and loaded .mbtiles files. */
+export const UNKNOWN_RESTRICTIONS: UsageRestrictions = {
+  offline: {
+    verdict: "unknown",
+    note: "Not verified — check the provider's terms before downloading tiles.",
+  },
+  commercial: {
+    verdict: "unknown",
+    note: "Not verified — check the provider's terms before any commercial use.",
+  },
+  redistribution: {
+    verdict: "unknown",
+    note: "Not verified — check the provider's terms before sharing the package.",
+  },
+};
+
+/** A style's usage restrictions, falling back to UNKNOWN_RESTRICTIONS when the
+ *  source carries no curated licence data. */
+export function getRestrictions(style: AppStyle): UsageRestrictions {
+  return style.restrictions ?? UNKNOWN_RESTRICTIONS;
+}
+
 const OFM_ATTR =
   '© <a href="https://openfreemap.org">OpenFreeMap</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const OFM_TERMS = "https://openfreemap.org/";
@@ -139,6 +239,86 @@ const ESRI_TERMS =
 const ESRI_ATTR = (sources: string) =>
   `Tiles © <a href="https://www.esri.com">Esri</a> — Source: ${sources}`;
 
+/** OpenFreeMap: permissive — no request limits, full-planet downloads
+ *  published, commercial use allowed. Shared by all five OFM presets. */
+const OFM_RESTRICTIONS: UsageRestrictions = {
+  offline: {
+    verdict: "allowed",
+    note: "OpenFreeMap sets no request limits and publishes full-planet downloads — caching tiles for offline use is sanctioned.",
+  },
+  commercial: {
+    verdict: "allowed",
+    note: "Commercial use is explicitly permitted, free of charge.",
+  },
+  redistribution: {
+    verdict: "conditional",
+    note: "Allowed, but the bundled OpenStreetMap data stays under ODbL — keep attribution and share-alike on any derived data.",
+  },
+};
+
+/** Esri / ArcGIS Online basemaps: the Master Agreement only permits offline
+ *  basemaps via official Content Packages inside licensed ArcGIS apps, with no
+ *  licence grant for anonymous tile access. Shared by all Esri presets. */
+const ESRI_RESTRICTIONS: UsageRestrictions = {
+  offline: {
+    verdict: "prohibited",
+    note: "Esri's Master Agreement only allows offline basemaps via official Content Packages inside licensed ArcGIS apps — bulk-downloading tiles into a package is not permitted.",
+  },
+  commercial: {
+    verdict: "prohibited",
+    note: "Anonymous tile access carries no Esri licence; commercial use requires a paid ArcGIS subscription.",
+  },
+  redistribution: {
+    verdict: "prohibited",
+    note: "Esri's terms forbid redistributing its content or giving third parties access to it.",
+  },
+};
+
+/** Hand-picked "Curated" set — the styles shown when the Curated chip is on.
+ *  Trim or extend this list to change the curated gallery. */
+export const CURATED_PRESET_IDS = new Set<string>([
+  "bright",
+  "liberty",
+  "positron",
+  "satellite",
+  "sentinel2",
+  "glad-landsat",
+  "esri-topo",
+  "esri-shaded-relief",
+  "humanitarian",
+]);
+
+/** Mapterhorn publishes open raster-DEM terrain tiles (Copernicus GLO-30,
+ *  global to z12). Rendered here as a hillshade over an OSM raster base —
+ *  raster-DEM isn't a single tile URL, so this preset carries a full spec. */
+const MAPTERHORN_SPEC: StyleSpecification = {
+  version: 8,
+  sources: {
+    "mapterhorn-osm": {
+      type: "raster",
+      tiles: ["https://a.tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      maxzoom: 19,
+    },
+    "mapterhorn-dem": {
+      type: "raster-dem",
+      tiles: ["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"],
+      encoding: "terrarium",
+      tileSize: 512,
+      maxzoom: 12,
+    },
+  },
+  layers: [
+    { id: "osm", type: "raster", source: "mapterhorn-osm" },
+    {
+      id: "hillshade",
+      type: "hillshade",
+      source: "mapterhorn-dem",
+      paint: { "hillshade-shadow-color": "#473b24" },
+    },
+  ],
+};
+
 export const PRESET_STYLES: PresetStyle[] = [
   // ── Street ──────────────────────────────────────────────────────────────
   {
@@ -146,6 +326,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Positron",
     desc: "Carto-style minimal light basemap. Best for overlays.",
     url: "https://tiles.openfreemap.org/styles/positron",
+    restrictions: OFM_RESTRICTIONS,
     kind: "vector",
     tone: "light",
     category: "street",
@@ -160,6 +341,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "OSM Liberty",
     desc: "Full-color OpenStreetMap vector style.",
     url: "https://tiles.openfreemap.org/styles/liberty",
+    restrictions: OFM_RESTRICTIONS,
     kind: "vector",
     tone: "light",
     category: "street",
@@ -173,6 +355,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "OSM Bright",
     desc: "High-contrast bright map. Strong type and roads.",
     url: "https://tiles.openfreemap.org/styles/bright",
+    restrictions: OFM_RESTRICTIONS,
     kind: "vector",
     tone: "light",
     category: "street",
@@ -187,6 +370,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Dark Matter",
     desc: "Dark monochrome basemap. Good under bright overlays.",
     url: "https://tiles.openfreemap.org/styles/dark",
+    restrictions: OFM_RESTRICTIONS,
     kind: "vector",
     tone: "dark",
     category: "street",
@@ -201,6 +385,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Fiord",
     desc: "Muted blue-grey OpenFreeMap basemap.",
     url: "https://tiles.openfreemap.org/styles/fiord",
+    restrictions: OFM_RESTRICTIONS,
     kind: "vector",
     tone: "dark",
     category: "street",
@@ -217,6 +402,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri Satellite",
     desc: "Esri World Imagery. Raster, global coverage.",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "dark",
     category: "satellite",
@@ -233,6 +419,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri Clarity",
     desc: "Sharpened recent imagery emphasising structures.",
     url: "https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "dark",
     category: "satellite",
@@ -249,6 +436,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     // EOX serves the same data on two hosts. `s2maps-tiles.eu` is fronted by
     // Cloudflare with a 403 wall; `tiles.maps.eox.at` returns proper CORS.
     url: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg",
+    restrictions: {
+      offline: {
+        verdict: "conditional",
+        note: "Permitted, but cached tiles stay bound to the 2024 layer's CC BY-NC-SA 4.0 licence.",
+      },
+      commercial: {
+        verdict: "prohibited",
+        note: "The 2024 layer is CC BY-NC-SA 4.0 — non-commercial only; commercial use needs a paid EOX licence.",
+      },
+      redistribution: {
+        verdict: "conditional",
+        note: "Allowed only if the shared package keeps the same CC BY-NC-SA 4.0 terms (share-alike, non-commercial).",
+      },
+    },
     kind: "raster",
     tone: "dark",
     category: "satellite",
@@ -265,6 +466,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     desc: "Cloud-free Sentinel-2 mosaic, free for non-commercial use.",
     // NIMBO's free MapCache layer is served as an OGC TMS (y-axis up).
     url: "https://prod-data.nimbo.earth/mapcache-free/tms/1.0.0/latest@kermap/{z}/{x}/{y}.png",
+    restrictions: {
+      offline: {
+        verdict: "prohibited",
+        note: "NIMBO's free terms forbid copying, downloading or saving the imagery in any form.",
+      },
+      commercial: {
+        verdict: "prohibited",
+        note: "The free licence is limited to non-commercial and research use.",
+      },
+      redistribution: {
+        verdict: "prohibited",
+        note: "Distributing, selling or transferring the imagery to third parties is forbidden.",
+      },
+    },
     kind: "raster",
     tone: "dark",
     category: "satellite",
@@ -281,6 +496,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "GLAD Landsat",
     desc: "GLAD seasonal Landsat composites for vegetation analysis.",
     url: "https://storage.googleapis.com/earthenginepartners-hansen/tiles/gfc_v1.12/last_543/{z}/{x}/{y}.jpg",
+    restrictions: {
+      offline: {
+        verdict: "allowed",
+        note: "The Global Forest Change dataset is CC BY 4.0 — copying and storing tiles is permitted.",
+      },
+      commercial: {
+        verdict: "allowed",
+        note: "CC BY 4.0 permits use for any purpose, including commercial.",
+      },
+      redistribution: {
+        verdict: "allowed",
+        note: "CC BY 4.0 allows redistributing the package, as long as attribution is kept.",
+      },
+    },
     kind: "raster",
     tone: "dark",
     category: "satellite",
@@ -291,6 +520,36 @@ export const PRESET_STYLES: PresetStyle[] = [
     previewTileUrl:
       "https://storage.googleapis.com/earthenginepartners-hansen/tiles/gfc_v1.12/last_543/{z}/{x}/{y}.jpg",
   },
+  {
+    id: "bing-satellite",
+    name: "Bing Satellite",
+    desc: "Microsoft Bing global aerial imagery. Subject to Microsoft's terms.",
+    url: "https://ecn.{subdomain}.tiles.virtualearth.net/tiles/a{quadkey}.jpeg?g=1",
+    restrictions: {
+      offline: {
+        verdict: "prohibited",
+        note: "Microsoft's terms forbid copying, storing or archiving Bing Maps content.",
+      },
+      commercial: {
+        verdict: "conditional",
+        note: "Commercial use needs a paid Bing Maps agreement; the free tier is capped and non-production.",
+      },
+      redistribution: {
+        verdict: "prohibited",
+        note: "Redistributing, reselling or sublicensing Bing Maps content is forbidden.",
+      },
+    },
+    kind: "raster",
+    tone: "dark",
+    category: "satellite",
+    subdomains: ["t0", "t1", "t2", "t3"],
+    attribution:
+      'Imagery © <a href="https://www.microsoft.com/maps">Microsoft</a> · Earthstar Geographics SIO',
+    license: "restrictive",
+    termsUrl: "https://www.microsoft.com/maps/product/terms.html",
+    previewTileUrl:
+      "https://ecn.{subdomain}.tiles.virtualearth.net/tiles/a{quadkey}.jpeg?g=1",
+  },
 
   // ── Topographic ─────────────────────────────────────────────────────────
   {
@@ -298,6 +557,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "OpenTopoMap",
     desc: "Topographic raster from OpenStreetMap.",
     url: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+    restrictions: {
+      offline: {
+        verdict: "prohibited",
+        note: "OpenTopoMap's community tile server forbids mass downloads — bulk-caching tiles is not permitted.",
+      },
+      commercial: {
+        verdict: "conditional",
+        note: "The CC-BY-SA map style allows commercial use, but the free tile server is for light interactive use only.",
+      },
+      redistribution: {
+        verdict: "conditional",
+        note: "The style is CC-BY-SA 3.0 — any redistribution must keep the same share-alike licence and attribution.",
+      },
+    },
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -312,6 +585,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri Topographic",
     desc: "Esri World Topographic — contours, hillshade, labels.",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -328,6 +602,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Hillshade",
     desc: "Greyscale relief-only. Ideal as a contour underlay.",
     url: "https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -342,6 +617,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri Shaded Relief",
     desc: "Colour-graded shaded relief with elevation tinting.",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -356,6 +632,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri Terrain Base",
     desc: "Minimal terrain backdrop — bathymetry + landcover only.",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -373,6 +650,7 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Esri National Geographic",
     desc: "National Geographic World Map — cartographic, illustrative.",
     url: "https://services.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
+    restrictions: ESRI_RESTRICTIONS,
     kind: "raster",
     tone: "light",
     category: "terrain",
@@ -383,6 +661,36 @@ export const PRESET_STYLES: PresetStyle[] = [
     previewTileUrl:
       "https://services.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
   },
+  {
+    id: "mapterhorn",
+    name: "Mapterhorn",
+    desc: "Open terrain hillshade (Copernicus GLO-30) over an OSM base.",
+    url: "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp",
+    restrictions: {
+      offline: {
+        verdict: "allowed",
+        note: "Mapterhorn publishes area-extract downloads — offline use of the terrain tiles is intended.",
+      },
+      commercial: {
+        verdict: "allowed",
+        note: "The terrain data (Copernicus GLO-30) and code are openly licensed with no commercial restriction.",
+      },
+      redistribution: {
+        verdict: "conditional",
+        note: "Allowed, provided the package carries the required Copernicus DEM and source attributions.",
+      },
+    },
+    kind: "raster",
+    tone: "light",
+    category: "terrain",
+    spec: MAPTERHORN_SPEC,
+    attribution:
+      'Terrain © <a href="https://mapterhorn.com">Mapterhorn</a> (Copernicus GLO-30) · ' +
+      '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    license: "attribution",
+    termsUrl: "https://mapterhorn.com",
+    previewTileUrl: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+  },
 
   // ── Activity ────────────────────────────────────────────────────────────
   {
@@ -390,6 +698,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "CyclOSM",
     desc: "Bicycle-oriented map with cycle routes & infrastructure.",
     url: "https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
+    restrictions: {
+      offline: {
+        verdict: "prohibited",
+        note: "CyclOSM runs on OpenStreetMap France community infrastructure — bulk pre-fetching of tiles is not permitted.",
+      },
+      commercial: {
+        verdict: "conditional",
+        note: "The CyclOSM style is open, but heavy or automated use of the free tile server is not permitted.",
+      },
+      redistribution: {
+        verdict: "prohibited",
+        note: "Building tile archives for redistribution is explicitly disallowed by the tile usage policy.",
+      },
+    },
     kind: "raster",
     tone: "light",
     category: "activity",
@@ -405,6 +727,20 @@ export const PRESET_STYLES: PresetStyle[] = [
     name: "Humanitarian",
     desc: "HOT humanitarian style — emphasises infrastructure & POIs.",
     url: "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+    restrictions: {
+      offline: {
+        verdict: "prohibited",
+        note: "HOT tiles run on OpenStreetMap France community infrastructure — bulk-caching tiles offline is not permitted.",
+      },
+      commercial: {
+        verdict: "conditional",
+        note: "The OpenStreetMap data is ODbL, but the free tile server is for light interactive use, not commercial bulk consumption.",
+      },
+      redistribution: {
+        verdict: "conditional",
+        note: "OpenStreetMap data is redistributable under ODbL, but tiles fetched against the server's no-bulk policy are not.",
+      },
+    },
     kind: "raster",
     tone: "light",
     category: "activity",
@@ -479,13 +815,12 @@ export function computeQuadkey(z: number, x: number, y: number): string {
   return key;
 }
 
-/** True if the URL contains either an XYZ-style template (`{z}/{x}/{y}` in
- *  either order) or a Bing-style `{quadkey}` placeholder. */
-const TILE_URL_RE =
-  /\{z\}.*\{x\}.*\{y\}|\{z\}.*\{y\}.*\{x\}|\{quadkey\}/;
-
+/** True if the URL is a tile template — it contains `{z}`, `{x}` and `{y}`
+ *  placeholders (in any order; some providers such as Google put `{z}` last)
+ *  or a Bing-style `{quadkey}` placeholder. */
 export function isTileUrlTemplate(url: string): boolean {
-  return TILE_URL_RE.test(url);
+  if (url.includes("{quadkey}")) return true;
+  return url.includes("{z}") && url.includes("{x}") && url.includes("{y}");
 }
 
 export function hasSubdomainPlaceholder(url: string): boolean {
@@ -585,7 +920,7 @@ export function buildMapStyle(
   if (isTileUrlTemplate(style.url)) {
     return rasterStyleForTileUrl(
       style.url,
-      undefined,
+      "subdomains" in style ? style.subdomains : undefined,
       "scheme" in style ? style.scheme : undefined,
     );
   }

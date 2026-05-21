@@ -154,18 +154,19 @@ body {
 /* ── Brand chip ──────────────────────────────────────────────────── */
 .va-brand {
   position: absolute;
-  top: calc(16px + env(safe-area-inset-top));
-  left: calc(16px + env(safe-area-inset-left));
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.92);
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 18px;
+  background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(10px);
-  border-radius: 8px;
-  font-size: 13px;
+  border: 1px solid rgba(120, 120, 120, 0.35);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.1px;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.08),
-    0 4px 12px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   z-index: 5;
 }
 .va-brand-mark {
@@ -188,22 +189,24 @@ body {
 .attrib-root {
   position: relative;
 }
+/* Styled to match MapLibre's default control buttons (zoom etc.) so it sits
+   consistently with native controls we may add later. */
 .attrib-btn {
   position: relative;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  width: 29px;
+  height: 29px;
+  border-radius: 4px;
   border: none;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(10px);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.08),
-    0 4px 12px rgba(0, 0, 0, 0.08);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #444;
+  color: #333;
+}
+.attrib-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 .attrib-btn-active {
   color: #1854f6;
@@ -228,6 +231,8 @@ body {
   top: calc(58px + env(safe-area-inset-top));
   right: calc(16px + env(safe-area-inset-right));
   width: min(340px, calc(100% - 32px));
+  max-height: calc(100dvh - 88px - env(safe-area-inset-top));
+  overflow-y: auto;
   background: #fff;
   border-radius: 12px;
   padding: 14px 16px;
@@ -306,25 +311,73 @@ body {
   padding-top: 8px;
 }
 
+/* ── Attribution popover: usage restrictions ─────────────────────── */
+.attrib-usage {
+  margin-top: 12px;
+}
+.attrib-usage-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #999;
+  margin-bottom: 4px;
+}
+.attrib-usage-row {
+  padding: 6px 0;
+  border-top: 1px solid #f0f0f0;
+}
+.attrib-usage-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.attrib-usage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.attrib-usage-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #333;
+}
+.attrib-usage-verdict {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.attrib-usage-note {
+  margin-top: 3px;
+  padding-left: 14px;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.45;
+}
+
 /* ── Help button ─────────────────────────────────────────────────── */
 .help-root {
   position: relative;
 }
+/* Matches MapLibre's default control buttons — see .attrib-btn. */
 .help-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  width: 29px;
+  height: 29px;
+  border-radius: 4px;
   border: none;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(10px);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.08),
-    0 4px 12px rgba(0, 0, 0, 0.08);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #444;
+  color: #333;
+}
+.help-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 .help-btn-active {
   color: #1854f6;
@@ -372,9 +425,56 @@ body {
 .help-popover p {
   margin: 0 0 10px;
 }
-.help-popover ol {
-  margin: 0 0 10px;
-  padding-left: 18px;
+/* Numbered stepper for the how-to-use steps. The connecting line is drawn in
+   two halves per step (above/below the circle, each 50% of the step) plus the
+   inter-step gap, so it joins circle centres regardless of text length. */
+.help-stepper {
+  margin: 4px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.help-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.help-step::before,
+.help-step::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  width: 2px;
+  background: #e2dfd7;
+  z-index: 0;
+}
+/* Line above the circle — every step but the first. */
+.help-step:not(:first-child)::before {
+  top: 0;
+  height: 50%;
+}
+/* Line below the circle, spanning the gap — every step but the last. */
+.help-step:not(:last-child)::after {
+  top: 50%;
+  height: calc(50% + 14px);
+}
+.help-step-num {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(24, 84, 246, 0.6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.help-step-text {
   color: #444;
 }
 .help-popover-tip {
@@ -1163,6 +1263,9 @@ textarea.dm-input {
   font-size: 11px;
   color: #888;
   border-top: 1px solid #eee;
+  /* Cancel the form's 14px gap so this row shares a single divider line with
+   * the estimate below it (whose border-top is that shared line). */
+  margin-bottom: -14px;
 }
 .dm-bounds-label {
   font-weight: 600;
@@ -1786,7 +1889,7 @@ textarea.dm-input {
   line-height: 1.4;
 }
 
-/* ── Download modal: licence acknowledgement ─────────────────────── */
+/* ── Download modal: usage-restrictions banner ───────────────────── */
 .dm-licence {
   padding: 12px 14px;
   border-radius: 8px;
@@ -1794,52 +1897,24 @@ textarea.dm-input {
   line-height: 1.5;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-.dm-licence-attribution {
-  background: #f6f0e3;
-  border: 1px solid #e6d3a8;
-  color: #5b4910;
-}
-.dm-licence-restrictive {
-  background: #fdecec;
-  border: 1px solid #f0bcbc;
-  color: #8a1a1a;
-}
-.dm-licence-head {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-.dm-licence-icon {
-  font-size: 14px;
-  line-height: 1;
-  margin-top: 1px;
+  gap: 10px;
+  background: #f6f6f3;
+  border: 1px solid #e0ded6;
+  color: #3a3a36;
 }
 .dm-licence-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  margin-bottom: 3px;
+  color: #2a2a27;
 }
-.dm-licence-attr {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.55);
-  border-radius: 4px;
-  font-size: 11px;
-  color: #555;
+.dm-licence-body {
+  font-size: 11.5px;
+  color: #6f6f68;
   line-height: 1.5;
-  word-break: break-word;
-}
-.dm-licence-attr:empty {
-  display: none;
 }
 .dm-licence-terms {
-  display: inline-block;
-  margin-top: 6px;
-  font-size: 11px;
   font-weight: 600;
-  color: inherit;
+  color: #1854f6;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -1848,13 +1923,88 @@ textarea.dm-input {
   gap: 8px;
   align-items: flex-start;
   cursor: pointer;
-  padding-top: 8px;
-  border-top: 1px dashed currentColor;
+  padding-top: 10px;
+  border-top: 1px dashed #d3d1c8;
 }
 .dm-licence-checkbox {
   margin-top: 2px;
   flex-shrink: 0;
   accent-color: #1854f6;
+}
+.dm-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dm-usage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dm-usage-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.dm-usage-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #2a2a27;
+}
+.dm-usage-verdict {
+  position: relative;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  text-decoration: underline dashed;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.dm-usage-verdict:focus-visible {
+  outline: 2px solid #1854f6;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+/* Hover/focus tooltip carrying the per-restriction detail text. */
+.dm-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: 230px;
+  padding: 7px 9px;
+  background: #2a2a27;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  line-height: 1.45;
+  text-align: left;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.dm-tip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 16px;
+  border: 5px solid transparent;
+  border-top-color: #2a2a27;
+}
+.dm-usage-verdict:hover .dm-tip,
+.dm-usage-verdict:focus .dm-tip {
+  opacity: 1;
+  visibility: visible;
 }
 
 /* ── Download modal: huge-download warning + confirm ──────────────── */
@@ -1997,4 +2147,662 @@ textarea.dm-input {
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+}
+
+/* ── Overlays feature (desktop only) ─────────────────────────────── */
+/* The host is a zero-size positioned anchor; the chip/panel are absolutely
+   positioned within it so the map underneath stays clickable. */
+.ovl-root {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* ── Entry chip ──────────────────────────────────────────────────── */
+.ovl-chip {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: calc(16px + env(safe-area-inset-left));
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px 7px 10px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 999px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1d24;
+}
+
+.ovl-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(24, 84, 246, 0.12);
+  color: #1854f6;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ── Panel ───────────────────────────────────────────────────────── */
+.ovl-panel {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: calc(16px + env(safe-area-inset-left));
+  z-index: 6;
+  width: 320px;
+  /* Content-driven height, capped so the panel never collides with the
+     bottom action card. Viewport-relative since the host is zero-height. */
+  max-height: calc(100dvh - 90px - env(safe-area-inset-top));
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  /* Matches the chip's border so the icon/title sit at identical coordinates
+     when the chip morphs into the panel. */
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 14px;
+  /* Clip children to the rounded shape so the body's square bottom corners
+     don't poke past the panel border. */
+  overflow: hidden;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 16px 40px rgba(0, 0, 0, 0.14);
+  color: #1a1d24;
+  font-family: inherit;
+  transform-origin: top left;
+  animation: ovlGrow 0.22s cubic-bezier(0.16, 0.7, 0.3, 1);
+}
+@keyframes ovlGrow {
+  from {
+    transform: scale(0.94) translateY(-4px);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Header padding + gap mirror the chip so the icon and title hold their
+   position when the chip morphs into the panel. The Add button is taken out
+   of flow (absolute) so it can't stretch the icon/title flex line. */
+.ovl-panel-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #f1efea;
+}
+/* The icon doubles as the close button. 24×24 hit area, but a -4px margin
+   keeps its 16px glyph in the exact spot the chip's icon occupied. */
+.ovl-panel-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin: -4px;
+  padding: 4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #1a1d24;
+  cursor: pointer;
+}
+.ovl-panel-icon:hover {
+  background: #f3f1ec;
+}
+.ovl-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* Inset by (panel radius − button radius) on top and right, so the button's
+   top-right corner arc is concentric with the panel's top-right corner. */
+.ovl-add-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 8px;
+  border: none;
+  border-radius: 7px;
+  background: #1854f6;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ovl-add-btn:hover {
+  background: #1247d8;
+}
+
+.ovl-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #fbe9e7;
+  border-bottom: 1px solid #f3d6d2;
+  color: #a83a3a;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ovl-error-close {
+  border: none;
+  background: transparent;
+  color: #a83a3a;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.ovl-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ovl-file-input {
+  display: none;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────── */
+.ovl-empty {
+  padding: 26px 22px 22px;
+  text-align: center;
+  color: #888;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.ovl-empty-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 14px;
+  border-radius: 12px;
+  background: rgba(24, 84, 246, 0.09);
+  color: #1854f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ovl-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #3a3833;
+  margin-bottom: 5px;
+}
+.ovl-empty-text {
+  margin-bottom: 12px;
+}
+.ovl-empty-text code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  padding: 0 4px;
+  background: #f5f3ee;
+  border-radius: 3px;
+  color: #555;
+}
+/* ── Layer row ───────────────────────────────────────────────────── */
+.ovl-row {
+  position: relative;
+  border-bottom: 1px solid #f4f2ed;
+  transition: background 0.12s;
+}
+.ovl-row.expanded {
+  background: #fbfaf6;
+}
+.ovl-row.dragging {
+  opacity: 0.4;
+}
+.ovl-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 10px 2px;
+}
+.ovl-drop-line {
+  height: 2px;
+  margin: -1px 12px;
+  border-radius: 2px;
+  background: #1854f6;
+}
+
+.ovl-drag-handle {
+  width: 12px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #b6b2a8;
+  cursor: grab;
+  flex-shrink: 0;
+  touch-action: none;
+}
+.ovl-drag-handle:active {
+  cursor: grabbing;
+  color: #1854f6;
+}
+
+.ovl-geom-icon {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ovl-name-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.ovl-name {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: text;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1d24;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ovl-name.dim {
+  opacity: 0.45;
+}
+.ovl-name-input {
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid #d9d4ca;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1d24;
+  background: #fff;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(24, 84, 246, 0.12);
+  box-sizing: border-box;
+}
+
+.ovl-icon-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #76726b;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ovl-icon-btn:hover {
+  background: #f3f1ec;
+}
+
+.ovl-menu-host {
+  position: relative;
+  display: inline-flex;
+}
+
+/* ── Kebab menu ──────────────────────────────────────────────────── */
+.ovl-kebab-menu {
+  min-width: 156px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.14),
+    0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.ovl-kebab-remove {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: #a83a3a;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+.ovl-kebab-remove:hover {
+  background: #fbe9e7;
+}
+
+/* ── Style editor ────────────────────────────────────────────────── */
+.ovl-row-editor {
+  padding: 0 14px 14px;
+}
+.ovl-style-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+.ovl-editor-sep {
+  height: 1px;
+  background: #f0efeb;
+  margin: 6px 0;
+}
+.ovl-frame {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+.ovl-frame-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #6b6b66;
+}
+.ovl-frame-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Colour swatches ─────────────────────────────────────────────── */
+.ovl-swatch-row {
+  display: flex;
+  gap: 4px;
+}
+.ovl-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) inset;
+}
+.ovl-swatch-adv {
+  position: relative;
+  background: conic-gradient(
+    from 0deg,
+    #ef4444,
+    #f59e0b,
+    #eab308,
+    #10b981,
+    #06b6d4,
+    #6366f1,
+    #a855f7,
+    #ef4444
+  );
+}
+.ovl-swatch-plus {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #888;
+}
+
+/* ── Advanced colour popover ─────────────────────────────────────── */
+.ovl-adv-popover {
+  padding: 10px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.ovl-adv-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #999;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.ovl-adv-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 14px);
+  gap: 3px;
+}
+.ovl-adv-cell {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) inset;
+}
+.ovl-adv-cell.active {
+  box-shadow:
+    0 0 0 1px #fff inset,
+    0 0 0 2px #1854f6;
+}
+.ovl-adv-sep {
+  height: 1px;
+  background: #f0efeb;
+  margin: 8px 0;
+}
+.ovl-adv-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ovl-adv-neutrals {
+  display: flex;
+  gap: 3px;
+}
+.ovl-hex {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #e3e1dc;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 6px 0 7px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+.ovl-hex-hash {
+  color: #a8a4a0;
+  font-size: 10.5px;
+}
+.ovl-hex-input {
+  width: 54px;
+  padding: 3px 2px;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: 10.5px;
+  color: #3a3833;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+
+/* ── Pill rows (size / dash / opacity / shape) ───────────────────── */
+.ovl-pill-row {
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  background: #f3f1ec;
+  border-radius: 8px;
+}
+.ovl-pill {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+}
+.ovl-pill.active {
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ovl-pill-wide {
+  min-width: 36px;
+}
+.ovl-pill-text {
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #999;
+}
+.ovl-stroke-glyph {
+  display: block;
+  width: 18px;
+  border-radius: 999px;
+}
+.ovl-label-glyph {
+  font-family: inherit;
+  font-weight: 600;
+  line-height: 1;
+}
+.ovl-glyph {
+  display: block;
+}
+
+/* ── Labels switch + field select ────────────────────────────────── */
+.ovl-switch {
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+  border: none;
+  border-radius: 999px;
+  background: #d8d4cc;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  transition: background 0.15s;
+}
+.ovl-switch.on {
+  justify-content: flex-end;
+}
+.ovl-switch-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.ovl-field-select {
+  min-width: 104px;
+  padding: 4px 6px;
+  border: 1px solid #e3e1dc;
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* ── Icon library popover ────────────────────────────────────────── */
+.ovl-icon-lib {
+  width: 232px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* All three pickers are positioned with fixed coords by positionPopover()
+   so they break out of the scrolling panel body. */
+.ovl-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+}
+.ovl-icon-lib-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ovl-icon-lib-head > span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #999;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.ovl-icon-lib-credit {
+  font-size: 9.5px;
+  color: #bbb;
+  text-decoration: none;
+}
+.ovl-icon-lib-credit:hover {
+  text-decoration: underline;
+}
+.ovl-icon-lib-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+.ovl-icon-cell {
+  aspect-ratio: 1;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: #f6f4ef;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ovl-icon-cell:hover {
+  background: #efece4;
 }

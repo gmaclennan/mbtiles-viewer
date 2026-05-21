@@ -1,3 +1,6 @@
+import { html, nothing, type TemplateResult } from "lit";
+import { classMap } from "lit/directives/class-map.js";
+import { LightElement } from "./lit-base.ts";
 import { BboxMap, type GeoBbox } from "./bbox-map.ts";
 import {
   bboxToArr,
@@ -11,7 +14,15 @@ import {
   WARN_MB,
   WARN_TILES,
 } from "./estimate.ts";
-import type { AppStyle } from "./preset-styles.ts";
+import {
+  getRestrictions,
+  USAGE_ASPECT_LABELS,
+  VERDICT_COLORS,
+  VERDICT_ICON_PATHS,
+  VERDICT_LABELS,
+  type AppStyle,
+  type UsageVerdict,
+} from "./preset-styles.ts";
 import {
   getStyleMaxZoomAsync,
   getStyleMaxZoomSync,
@@ -48,25 +59,52 @@ export interface DownloadModalOptions {
   isMobile: () => boolean;
 }
 
-export class DownloadModal {
-  readonly el: HTMLDivElement;
-  private opts: DownloadModalOptions;
-  private isOpen = false;
-  private mobile = false;
-  private step: 1 | 2 = 1;
-  private status: Status = "idle";
-  private progress = 0;
-  private errorText: string | null = null;
-  private maxZoom = DEFAULT_MAX_ZOOM;
-  private name = "";
-  private desc = "";
+export class DownloadModal extends LightElement {
+  static properties = {
+    isOpen: { state: true },
+    mobile: { state: true },
+    step: { state: true },
+    status: { state: true },
+    progress: { state: true },
+    errorText: { state: true },
+    maxZoom: { state: true },
+    name: { state: true },
+    desc: { state: true },
+    acknowledged: { state: true },
+    effectiveMaxZoom: { state: true },
+    avgTileBytes: { state: true },
+    currentStyle: { state: true },
+    currentGeoBbox: { state: true },
+  };
+
+  // Reactive state — declared (not class fields, which would shadow the
+  // accessors Lit installs) and initialised in the constructor.
+  declare isOpen: boolean;
+  declare mobile: boolean;
+  declare step: 1 | 2;
+  declare status: Status;
+  declare progress: number;
+  declare errorText: string | null;
+  declare maxZoom: number;
+  declare name: string;
+  declare desc: string;
   /** Ticked the licence-acknowledgement checkbox (attribution/restrictive styles). */
-  private acknowledged = false;
+  declare acknowledged: boolean;
+  /** Effective slider cap. Starts at the global MAX_ZOOM_LIMIT, narrowed down
+   *  once the source's actual maxzoom is known (preset.maxZoom, mbtiles
+   *  metadata, or a fetched style.json/TileJSON). */
+  declare effectiveMaxZoom: number;
+  declare avgTileBytes: number | null;
+  declare currentStyle: AppStyle | null;
+  declare currentGeoBbox: GeoBbox | null;
+
+  // Non-reactive plain fields — mutating these must not schedule a render.
+  private opts!: DownloadModalOptions;
   /** The huge-download confirmation overlay while it's open. */
   private hugeConfirmEl: HTMLDivElement | null = null;
-  private currentStyle: AppStyle | null = null;
-  private currentGeoBbox: GeoBbox | null = null;
   private previewMap: BboxMap | null = null;
+  /** Stable host node for the BboxMap preview — interpolated into the template
+   *  so Lit reuses it across re-renders and the MapLibre canvas survives. */
   private previewContainer: HTMLDivElement | null = null;
   private controller: DownloadController | null = null;
   // Size sampler state. Cache is per (style, maxZoom) and seeded fresh on each
@@ -74,20 +112,58 @@ export class DownloadModal {
   // the slider before a previous run completes.
   private resolvedTileUrls: string[] | null = null;
   private resolvedTileUrlsForStyleId: string | null = null;
-  private avgTileBytes: number | null = null;
   private sampleByZoom = new Map<number, number>();
   private sampleAbort: AbortController | null = null;
   private sampleTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Effective slider cap. Starts at the global MAX_ZOOM_LIMIT, narrowed
-   *  down when the source's actual maxzoom is known (preset.maxZoom, mbtiles
-   *  metadata, or a fetched style.json/TileJSON). */
-  private effectiveMaxZoom: number = MAX_ZOOM_LIMIT;
   private maxZoomResolveAbort: AbortController | null = null;
 
-  constructor(options: DownloadModalOptions) {
+  constructor() {
+    super();
+    this.isOpen = false;
+    this.mobile = false;
+    this.step = 1;
+    this.status = "idle";
+    this.progress = 0;
+    this.errorText = null;
+    this.maxZoom = DEFAULT_MAX_ZOOM;
+    this.name = "";
+    this.desc = "";
+    this.acknowledged = false;
+    this.effectiveMaxZoom = MAX_ZOOM_LIMIT;
+    this.avgTileBytes = null;
+    this.currentStyle = null;
+    this.currentGeoBbox = null;
+    // Backdrop click-to-close — only a click landing on the host itself counts.
+    this.addEventListener("click", (e) => {
+      if (e.target === this && this.status !== "downloading") this.close();
+    });
+  }
+
+  /** Inject runtime options. Custom-element constructors take no arguments. */
+  init(options: DownloadModalOptions): this {
     this.opts = options;
-    this.el = document.createElement("div");
-    this.el.className = "dm-backdrop hidden";
+    return this;
+  }
+
+  /** The component is its own root element. */
+  get el(): this {
+    return this;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.classList.add("dm-backdrop");
+    if (!this.isOpen) this.classList.add("hidden");
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.sampleAbort?.abort();
+    this.maxZoomResolveAbort?.abort();
+    if (this.sampleTimer) clearTimeout(this.sampleTimer);
+    this.sampleTimer = null;
+    this.previewMap?.destroy();
+    this.previewMap = null;
   }
 
   open(args: {
@@ -100,19 +176,15 @@ export class DownloadModal {
 
     // Optimistic cap from sync data (mbtiles metadata, recents that persisted
     // a resolved max, or a raster wrapper spec with inline source.maxzoom).
-    // The async resolver below will tighten this down once it walks the
-    // actual style/TileJSON or probes a tile URL.
+    // The async resolver below tightens this once it walks the actual
+    // style/TileJSON or probes a tile URL.
     const syncMax = getStyleMaxZoomSync(args.style);
-    this.effectiveMaxZoom = Math.min(
-      MAX_ZOOM_LIMIT,
-      syncMax ?? MAX_ZOOM_LIMIT,
+    this.effectiveMaxZoom = Math.min(MAX_ZOOM_LIMIT, syncMax ?? MAX_ZOOM_LIMIT);
+    this.maxZoom = Math.min(
+      this.effectiveMaxZoom,
+      Math.max(Math.round(args.currentMapZoom + 2), DEFAULT_MAX_ZOOM),
     );
 
-    this.maxZoom = Math.max(
-      Math.round(args.currentMapZoom + 2),
-      DEFAULT_MAX_ZOOM,
-    );
-    this.maxZoom = Math.min(this.effectiveMaxZoom, this.maxZoom);
     this.name = "";
     this.desc = "";
     this.acknowledged = false;
@@ -122,7 +194,7 @@ export class DownloadModal {
     this.errorText = null;
     this.step = 1;
     this.mobile = this.opts.isMobile();
-    this.isOpen = true;
+
     // Reset sampler state for the new style. Cache is keyed by maxZoom only —
     // the bbox is locked for the duration of the modal session.
     if (this.resolvedTileUrlsForStyleId !== args.style.id) {
@@ -135,15 +207,20 @@ export class DownloadModal {
     this.sampleAbort = null;
     this.maxZoomResolveAbort?.abort();
     this.maxZoomResolveAbort = null;
-    this.el.classList.toggle("dm-mobile", this.mobile);
-    this.el.classList.remove("hidden");
-    this.render();
+
+    // Fresh preview container for this session — the BboxMap is built lazily
+    // in updated() once it's connected and sized.
+    this.previewMap?.destroy();
+    this.previewMap = null;
+    this.previewContainer = document.createElement("div");
+    this.previewContainer.className = "dm-preview-host";
+
+    this.isOpen = true;
     this.kickoffSample(0);
 
     // Always run the async resolver. It walks style.json → TileJSON, then
     // (for tile URL templates without metadata) probes the actual tile server
-    // to find the highest zoom that returns content. The sync cap is just an
-    // optimistic starting point.
+    // to find the highest zoom that returns content.
     void this.resolveAsyncMaxZoom();
   }
 
@@ -162,20 +239,25 @@ export class DownloadModal {
     this.maxZoomResolveAbort = null;
     if (this.sampleTimer) clearTimeout(this.sampleTimer);
     this.sampleTimer = null;
-    this.el.classList.add("hidden");
-    this.el.innerHTML = "";
   }
 
-  private render() {
-    if (!this.isOpen) return;
-    // Preserve preview map across re-renders to avoid re-creating it.
-    const existingPreview = this.previewContainer;
-    this.el.innerHTML = "";
-    if (this.mobile) this.renderMobile(existingPreview);
-    else this.renderDesktop(existingPreview);
-    // Update preview map zoom on each render
-    if (this.previewMap) {
-      this.previewMap.map.easeTo({ zoom: this.maxZoom, duration: 250 });
+  render() {
+    if (!this.isOpen) return nothing;
+    return this.mobile ? this.renderMobile() : this.renderDesktop();
+  }
+
+  protected updated() {
+    this.classList.toggle("hidden", !this.isOpen);
+    this.classList.toggle("dm-mobile", this.mobile);
+    // Build the preview map once the stable container is connected and sized.
+    if (this.isOpen && this.previewContainer && !this.previewMap) {
+      this.buildPreviewMap(this.previewContainer);
+    }
+    if (this.previewMap && this.previewContainer?.isConnected) {
+      this.previewMap.map.resize();
+      if (Math.round(this.previewMap.map.getZoom()) !== this.maxZoom) {
+        this.previewMap.map.easeTo({ zoom: this.maxZoom, duration: 250 });
+      }
     }
   }
 
@@ -192,9 +274,8 @@ export class DownloadModal {
     return (this.tileCount * this.bytesPerTile) / (1024 * 1024);
   }
 
-  /** True while the size estimate is using the fallback constant. The UI
-   *  prefixes "~" on the size already, but we use this to dim it slightly so
-   *  the user sees the value is provisional. */
+  /** True once the size estimate is using a real sample (not the fallback
+   *  constant) — used to dim the value slightly while it's provisional. */
   private get sizeIsFromSample() {
     return this.avgTileBytes != null;
   }
@@ -218,7 +299,6 @@ export class DownloadModal {
 
   private buildPreviewMap(host: HTMLDivElement) {
     if (this.previewMap || !this.currentStyle || !this.currentGeoBbox) return;
-    this.previewContainer = host;
     this.previewMap = new BboxMap({
       container: host,
       initialStyle: this.currentStyle,
@@ -234,204 +314,168 @@ export class DownloadModal {
     });
   }
 
-  private renderDesktop(existingPreview: HTMLDivElement | null) {
-    const inner = document.createElement("div");
-    inner.className = "dm-inner";
-    inner.addEventListener("click", (e) => e.stopPropagation());
-    this.el.addEventListener("click", (e) => {
-      if (e.target === this.el && this.status !== "downloading") this.close();
-    });
+  private renderDesktop(): TemplateResult {
+    return html`
+      <div class="dm-inner">
+        <div class="dm-header">
+          <div>
+            <div class="dm-title">Download map package</div>
+            <div class="dm-subtitle">Set max zoom and metadata</div>
+          </div>
+          <button class="dm-close" aria-label="Close" @click=${() => this.close()}>×</button>
+        </div>
+        <div class="dm-body">
+          <div class="dm-preview-col">
+            ${this.previewContainer}
+            ${this.previewBadges()}
+          </div>
+          <div class="dm-form-col">
+            ${this.buildZoomSlider()}
+            ${this.buildNameDescFields()}
+            ${this.buildBoundsRow()}
+            ${this.buildEstimate()}
+            ${this.buildLicenceBanner()}
+            ${this.buildWarning()}
+            ${this.status === "error" && this.errorText
+              ? this.buildErrorBanner()
+              : nothing}
+            ${this.status === "downloading" ? this.buildProgress() : nothing}
+            ${this.status === "success" ? this.buildSuccess() : nothing}
+            ${this.buildPrimaryButton()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
-    const header = document.createElement("div");
-    header.className = "dm-header";
-    header.innerHTML = `
+  private renderMobile(): TemplateResult {
+    return html`
+      <div class="dm-mobile-inner">
+        <div class="dm-mobile-header">
+          <div class="dm-mobile-header-left">
+            ${this.step === 2
+              ? html`
+                  <button
+                    class="dm-mobile-back"
+                    aria-label="Back"
+                    ?disabled=${this.status === "downloading"}
+                    @click=${() => (this.step = 1)}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                      stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <path d="M11 4l-5 5 5 5" />
+                    </svg>
+                  </button>
+                `
+              : nothing}
+            <div>
+              <div class="dm-mobile-title">
+                ${this.step === 1 ? "Set zoom level" : "Name & download"}
+              </div>
+              <div class="dm-mobile-step">Step ${this.step} of 2</div>
+            </div>
+          </div>
+          <button
+            class="dm-mobile-close"
+            aria-label="Close"
+            ?disabled=${this.status === "downloading"}
+            @click=${() => this.close()}
+          >×</button>
+        </div>
+        <div class="dm-mobile-progress">
+          <div
+            class="dm-mobile-progress-fill"
+            style="width: ${this.step === 1 ? "50%" : "100%"}"
+          ></div>
+        </div>
+        ${this.step === 1 ? this.renderMobileStep1() : this.renderMobileStep2()}
+      </div>
+    `;
+  }
+
+  private renderMobileStep1(): TemplateResult {
+    return html`
+      ${this.previewContainer}
+      ${this.previewBadges()}
+      <div class="dm-mobile-form">
+        ${this.buildZoomSlider()}
+        ${this.buildEstimate()}
+        ${this.buildWarning()}
+        <button class="dm-primary" @click=${() => (this.step = 2)}>
+          Continue
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M3 7h8M7 3l4 4-4 4" />
+          </svg>
+        </button>
+      </div>
+    `;
+  }
+
+  private renderMobileStep2(): TemplateResult {
+    return html`
+      <div class="dm-mobile-form">
+        ${this.buildNameDescFields()}
+        ${this.buildBoundsRow()}
+        ${this.buildEstimate()}
+        ${this.buildLicenceBanner()}
+        ${this.buildWarning()}
+        ${this.status === "error" && this.errorText
+          ? this.buildErrorBanner()
+          : nothing}
+        ${this.status === "downloading" ? this.buildProgress() : nothing}
+        ${this.status === "success" ? this.buildSuccess() : nothing}
+        <div class="dm-mobile-primary-wrap">${this.buildPrimaryButton()}</div>
+      </div>
+    `;
+  }
+
+  private previewBadges(): TemplateResult {
+    return html`
+      <div class="dm-preview-badges">
+        <div class="dm-preview-zoom">Preview · zoom ${this.maxZoom}</div>
+        <div class="dm-preview-hint">
+          Pan to inspect features at this zoom · zoom is locked
+        </div>
+      </div>
+    `;
+  }
+
+  private onZoomInput = (e: Event) => {
+    this.maxZoom = Number((e.target as HTMLInputElement).value);
+    this.applyCachedSampleForZoom();
+    // Debounced live sample for the new zoom; the cached value (if any) shows
+    // immediately so the user isn't staring at "—".
+    this.kickoffSample(250);
+  };
+
+  private buildZoomSlider(): TemplateResult {
+    return html`
       <div>
-        <div class="dm-title">Download map package</div>
-        <div class="dm-subtitle">Set max zoom and metadata</div>
+        <label class="dm-label">Max zoom</label>
+        <div class="dm-zoom-row">
+          <input
+            type="range"
+            min=${MIN_ZOOM_LIMIT}
+            max=${this.effectiveMaxZoom}
+            step="1"
+            class="dm-zoom-slider"
+            .value=${String(this.maxZoom)}
+            @input=${this.onZoomInput}
+          />
+          <span class="dm-zoom-num">${this.maxZoom}</span>
+        </div>
+        <div class="dm-zoom-ticks">
+          <span>City</span><span>Street</span><span>Building</span>
+        </div>
       </div>
-      <button class="dm-close" aria-label="Close">×</button>`;
-    header
-      .querySelector(".dm-close")
-      ?.addEventListener("click", () => this.close());
-    inner.appendChild(header);
-
-    const body = document.createElement("div");
-    body.className = "dm-body";
-    inner.appendChild(body);
-
-    const previewCol = document.createElement("div");
-    previewCol.className = "dm-preview-col";
-    body.appendChild(previewCol);
-
-    const previewHost =
-      existingPreview ?? document.createElement("div");
-    // Only set on creation — BboxMap adds `bbox-map-root` (which carries the
-    // overflow:hidden that clips the bbox stroke), and reassigning className
-    // on re-render would drop it.
-    if (!existingPreview) previewHost.className = "dm-preview-host";
-    previewCol.appendChild(previewHost);
-    if (!existingPreview) this.buildPreviewMap(previewHost);
-    previewCol.appendChild(this.previewBadges());
-
-    const formCol = document.createElement("div");
-    formCol.className = "dm-form-col";
-    body.appendChild(formCol);
-    formCol.appendChild(this.buildZoomSlider());
-    formCol.appendChild(this.buildNameDescFields());
-    formCol.appendChild(this.buildBoundsRow());
-    formCol.appendChild(this.buildEstimate());
-    const licence = this.buildLicenceBanner();
-    if (licence) formCol.appendChild(licence);
-    formCol.appendChild(this.buildWarningSlot());
-    if (this.status === "error" && this.errorText) {
-      formCol.appendChild(this.buildErrorBanner());
-    }
-    if (this.status === "downloading") {
-      formCol.appendChild(this.buildProgress());
-    }
-    if (this.status === "success") {
-      formCol.appendChild(this.buildSuccess());
-    }
-    formCol.appendChild(this.buildPrimaryButton());
-
-    this.el.appendChild(inner);
-  }
-
-  private renderMobile(existingPreview: HTMLDivElement | null) {
-    const inner = document.createElement("div");
-    inner.className = "dm-mobile-inner";
-    inner.addEventListener("click", (e) => e.stopPropagation());
-
-    const header = document.createElement("div");
-    header.className = "dm-mobile-header";
-    const left = document.createElement("div");
-    left.className = "dm-mobile-header-left";
-    if (this.step === 2) {
-      const back = document.createElement("button");
-      back.className = "dm-mobile-back";
-      back.setAttribute("aria-label", "Back");
-      back.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round"><path d="M11 4l-5 5 5 5" /></svg>`;
-      back.disabled = this.status === "downloading";
-      back.addEventListener("click", () => {
-        this.step = 1;
-        this.render();
-      });
-      left.appendChild(back);
-    }
-    const title = document.createElement("div");
-    title.innerHTML = `
-      <div class="dm-mobile-title">${this.step === 1 ? "Set zoom level" : "Name &amp; download"}</div>
-      <div class="dm-mobile-step">Step ${this.step} of 2</div>`;
-    left.appendChild(title);
-    header.appendChild(left);
-
-    const close = document.createElement("button");
-    close.className = "dm-mobile-close";
-    close.setAttribute("aria-label", "Close");
-    close.textContent = "×";
-    close.disabled = this.status === "downloading";
-    close.addEventListener("click", () => this.close());
-    header.appendChild(close);
-    inner.appendChild(header);
-
-    const progBar = document.createElement("div");
-    progBar.className = "dm-mobile-progress";
-    progBar.innerHTML = `<div class="dm-mobile-progress-fill" style="width: ${this.step === 1 ? "50%" : "100%"}"></div>`;
-    inner.appendChild(progBar);
-
-    if (this.step === 1) {
-      const previewHost =
-        existingPreview ?? document.createElement("div");
-      if (!existingPreview) previewHost.className = "dm-preview-host";
-      inner.appendChild(previewHost);
-      if (!existingPreview) this.buildPreviewMap(previewHost);
-      inner.appendChild(this.previewBadges());
-
-      const form = document.createElement("div");
-      form.className = "dm-mobile-form";
-      form.appendChild(this.buildZoomSlider());
-      form.appendChild(this.buildEstimate());
-      form.appendChild(this.buildWarningSlot());
-      const cont = document.createElement("button");
-      cont.className = "dm-primary";
-      cont.dataset.dmSection = "continue";
-      cont.innerHTML = `
-        Continue
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round"><path d="M3 7h8M7 3l4 4-4 4" /></svg>`;
-      cont.addEventListener("click", () => {
-        this.step = 2;
-        this.render();
-      });
-      form.appendChild(cont);
-      inner.appendChild(form);
-    } else {
-      const form = document.createElement("div");
-      form.className = "dm-mobile-form";
-      form.appendChild(this.buildNameDescFields());
-      form.appendChild(this.buildBoundsRow());
-      form.appendChild(this.buildEstimate());
-      const licence = this.buildLicenceBanner();
-      if (licence) form.appendChild(licence);
-      form.appendChild(this.buildWarningSlot());
-      if (this.status === "error" && this.errorText) {
-        form.appendChild(this.buildErrorBanner());
-      }
-      if (this.status === "downloading") form.appendChild(this.buildProgress());
-      if (this.status === "success") form.appendChild(this.buildSuccess());
-      const primaryWrap = document.createElement("div");
-      primaryWrap.className = "dm-mobile-primary-wrap";
-      primaryWrap.appendChild(this.buildPrimaryButton());
-      form.appendChild(primaryWrap);
-      inner.appendChild(form);
-    }
-
-    this.el.appendChild(inner);
-  }
-
-  private previewBadges() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-preview-badges";
-    wrap.innerHTML = `
-      <div class="dm-preview-zoom">Preview · zoom ${this.maxZoom}</div>
-      <div class="dm-preview-hint">Pan to inspect features at this zoom · zoom is locked</div>`;
-    return wrap;
-  }
-
-  private buildZoomSlider() {
-    const wrap = document.createElement("div");
-    wrap.innerHTML = `
-      <label class="dm-label">Max zoom</label>
-      <div class="dm-zoom-row">
-        <input type="range" min="${MIN_ZOOM_LIMIT}" max="${this.effectiveMaxZoom}" step="1" class="dm-zoom-slider" />
-        <span class="dm-zoom-num"></span>
-      </div>
-      <div class="dm-zoom-ticks">
-        <span>City</span><span>Street</span><span>Building</span>
-      </div>`;
-    const input = wrap.querySelector<HTMLInputElement>(".dm-zoom-slider")!;
-    const num = wrap.querySelector<HTMLSpanElement>(".dm-zoom-num")!;
-    input.value = String(this.maxZoom);
-    num.textContent = String(this.maxZoom);
-    input.addEventListener("input", () => {
-      this.maxZoom = Number(input.value);
-      num.textContent = String(this.maxZoom);
-      this.applyCachedSampleForZoom();
-      this.softUpdate();
-      // Debounced live sample for the new zoom; the cached value (if any)
-      // shows immediately above so the user isn't staring at "—".
-      this.kickoffSample(250);
-    });
-    return wrap;
+    `;
   }
 
   /** Pull the cached avg-bytes for the current maxZoom (if any) into
-   *  `this.avgTileBytes` so softUpdate paints with it. */
+   *  `this.avgTileBytes` so the estimate repaints with it. */
   private applyCachedSampleForZoom() {
-    const cached = this.sampleByZoom.get(this.maxZoom);
-    this.avgTileBytes = cached ?? null;
+    this.avgTileBytes = this.sampleByZoom.get(this.maxZoom) ?? null;
   }
 
   /** Kick off a tile-size sample for the current (style, maxZoom) after the
@@ -480,10 +524,7 @@ export class DownloadModal {
       if (ctrl.signal.aborted) return;
       if (avg != null) {
         this.sampleByZoom.set(targetZoom, avg);
-        if (this.maxZoom === targetZoom) {
-          this.avgTileBytes = avg;
-          this.softUpdate();
-        }
+        if (this.maxZoom === targetZoom) this.avgTileBytes = avg;
       }
     } catch {
       // swallow — fall back to the default constant
@@ -506,179 +547,235 @@ export class DownloadModal {
     if (next === this.effectiveMaxZoom) return;
     this.effectiveMaxZoom = next;
     if (this.maxZoom > next) this.maxZoom = next;
-    // Slider's `max` attribute is set inside buildZoomSlider() — re-render so
-    // it picks up the tightened cap.
-    this.render();
   }
 
-  private buildNameDescFields() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-fields";
-    wrap.innerHTML = `
-      <div>
-        <label class="dm-label">Name</label>
-        <input type="text" class="dm-input dm-name" placeholder="e.g. London — Hyde Park & Mayfair" />
+  private buildNameDescFields(): TemplateResult {
+    return html`
+      <div class="dm-fields">
+        <div>
+          <label class="dm-label">Name</label>
+          <input
+            type="text"
+            class="dm-input dm-name"
+            placeholder="e.g. London — Hyde Park & Mayfair"
+            .value=${this.name}
+            @input=${(e: Event) =>
+              (this.name = (e.target as HTMLInputElement).value)}
+          />
+        </div>
+        <div>
+          <label class="dm-label">
+            Description <span class="dm-label-aux">· optional</span>
+          </label>
+          <textarea
+            class="dm-input dm-desc"
+            rows="2"
+            placeholder="Notes about what this package contains."
+            .value=${this.desc}
+            @input=${(e: Event) =>
+              (this.desc = (e.target as HTMLTextAreaElement).value)}
+          ></textarea>
+        </div>
       </div>
-      <div>
-        <label class="dm-label">Description <span class="dm-label-aux">· optional</span></label>
-        <textarea class="dm-input dm-desc" rows="2" placeholder="Notes about what this package contains."></textarea>
-      </div>`;
-    const nameEl = wrap.querySelector<HTMLInputElement>(".dm-name")!;
-    const descEl = wrap.querySelector<HTMLTextAreaElement>(".dm-desc")!;
-    nameEl.value = this.name;
-    descEl.value = this.desc;
-    nameEl.addEventListener("input", () => (this.name = nameEl.value));
-    descEl.addEventListener("input", () => (this.desc = descEl.value));
-    return wrap;
+    `;
   }
 
-  private buildBoundsRow() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-bounds-row";
+  private buildBoundsRow(): TemplateResult {
     const g = this.currentGeoBbox;
     const wsen = g
-      ? [g.west, g.south, g.east, g.north]
-          .map((n) => n.toFixed(4))
-          .join(", ")
+      ? [g.west, g.south, g.east, g.north].map((n) => n.toFixed(4)).join(", ")
       : "—";
-    wrap.innerHTML = `<span class="dm-bounds-label">Bounds</span><span class="dm-bounds-val"></span>`;
-    wrap.querySelector(".dm-bounds-val")!.textContent = wsen;
-    return wrap;
+    return html`
+      <div class="dm-bounds-row">
+        <span class="dm-bounds-label">Bounds</span>
+        <span class="dm-bounds-val">${wsen}</span>
+      </div>
+    `;
   }
 
-  private buildEstimate() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-estimate";
-    wrap.dataset.dmSection = "estimate";
-    wrap.innerHTML = `<span>Estimated</span><span class="dm-estimate-val"></span>`;
-    wrap.querySelector(".dm-estimate-val")!.textContent = this.estimateText();
-    return wrap;
+  private estimateText(): string {
+    return `${this.tileCount.toLocaleString()} tiles · ~${formatBytes(
+      this.tileCount * this.bytesPerTile,
+    )}`;
   }
 
-  private estimateText() {
-    return `${this.tileCount.toLocaleString()} tiles · ~${formatBytes(this.tileCount * this.bytesPerTile)}`;
+  private buildEstimate(): TemplateResult {
+    return html`
+      <div class="dm-estimate">
+        <span>Estimated</span>
+        <span
+          class=${classMap({
+            "dm-estimate-val": true,
+            "dm-estimate-provisional": !this.sizeIsFromSample,
+          })}
+          >${this.estimateText()}</span
+        >
+      </div>
+    `;
   }
 
-  /** Wrapper slot for the warning banner so softUpdate can swap its contents
-   *  in place without rebuilding the surrounding form. */
-  private buildWarningSlot() {
-    const slot = document.createElement("div");
-    slot.dataset.dmSection = "warn-slot";
-    const banner = this.buildWarning();
-    if (banner) slot.appendChild(banner);
-    return slot;
-  }
-
-  private buildWarning() {
+  private buildWarning(): TemplateResult | typeof nothing {
     const lvl = this.warnLevel;
-    if (!lvl) return null;
-    const wrap = document.createElement("div");
-    wrap.className = `dm-warn dm-warn-${lvl}`;
+    if (!lvl) return nothing;
     const icon = lvl === "huge" ? "⛔" : "⚠";
     const sizeStr = formatBytes(this.tileCount * this.bytesPerTile);
     const msg =
       lvl === "huge"
-        ? `Very large package — <b>${this.tileCount.toLocaleString()} tiles · ~${sizeStr}</b>. You'll be asked to confirm before downloading. Consider lowering max zoom or shrinking the area.`
-        : `Heads up — this package is large (~<b>${sizeStr}</b>). Make sure you're on Wi-Fi.`;
-    wrap.innerHTML = `<span class="dm-warn-icon">${icon}</span><span>${msg}</span>`;
-    return wrap;
-  }
-
-  /** Licence-acknowledgement banner — shown only for attribution/restrictive
-   *  styles. The required checkbox gates the primary download button. */
-  private buildLicenceBanner(): HTMLDivElement | null {
-    const style = this.currentStyle;
-    if (!style || !this.needsAck) return null;
-    const restrictive = style.license === "restrictive";
-    const wrap = document.createElement("div");
-    wrap.className = `dm-licence dm-licence-${
-      restrictive ? "restrictive" : "attribution"
-    }`;
-    const title = restrictive ? "Restricted licence" : "Attribution required";
-    const body = restrictive
-      ? "This basemap has restrictive terms of use. Some providers prohibit offline caching or commercial re-use — you are responsible for compliance."
-      : "This basemap must be credited wherever it's displayed. By downloading you agree to keep the attribution visible.";
-
-    const head = document.createElement("div");
-    head.className = "dm-licence-head";
-    head.innerHTML = `
-      <span class="dm-licence-icon">${restrictive ? "⛔" : "⚠"}</span>
-      <div>
-        <div class="dm-licence-title"></div>
-        <div class="dm-licence-body"></div>
-        <div class="dm-licence-attr"></div>
-      </div>`;
-    head.querySelector(".dm-licence-title")!.textContent = title;
-    head.querySelector(".dm-licence-body")!.textContent = body;
-    head.querySelector(".dm-licence-attr")!.innerHTML = style.attribution || "";
-    if (style.termsUrl) {
-      const terms = document.createElement("a");
-      terms.className = "dm-licence-terms";
-      terms.href = style.termsUrl;
-      terms.target = "_blank";
-      terms.rel = "noopener noreferrer";
-      terms.textContent = `Read ${style.name}'s terms of use ↗`;
-      head.querySelector(".dm-licence-attr")!.after(terms);
-    }
-    wrap.appendChild(head);
-
-    const label = document.createElement("label");
-    label.className = "dm-licence-check";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "dm-licence-checkbox";
-    cb.checked = this.acknowledged;
-    cb.addEventListener("change", () => {
-      this.acknowledged = cb.checked;
-      this.render();
-    });
-    label.appendChild(cb);
-    const text = document.createElement("span");
-    text.innerHTML = `I'll comply with <b></b>'s terms of use when storing &amp; redistributing the downloaded tiles.`;
-    text.querySelector("b")!.textContent = style.name;
-    label.appendChild(text);
-    wrap.appendChild(label);
-    return wrap;
-  }
-
-  private buildErrorBanner() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-warn dm-warn-hard";
-    wrap.innerHTML = `<span class="dm-warn-icon">⛔</span><span></span>`;
-    wrap.querySelector("span:last-child")!.textContent = this.errorText ?? "";
-    return wrap;
-  }
-
-  private buildProgress() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-progress";
-    const pct = Math.round(this.progress * 100);
-    wrap.innerHTML = `
-      <div class="dm-progress-row">
-        <span>Downloading…</span><span class="dm-progress-pct">${pct}%</span>
+        ? html`Very large package —
+            <b>${this.tileCount.toLocaleString()} tiles · ~${sizeStr}</b>.
+            You'll be asked to confirm before downloading. Consider lowering max
+            zoom or shrinking the area.`
+        : html`Heads up — this package is large (~<b>${sizeStr}</b>). Make sure
+            you're on Wi-Fi.`;
+    return html`
+      <div class="dm-warn dm-warn-${lvl}">
+        <span class="dm-warn-icon">${icon}</span><span>${msg}</span>
       </div>
-      <div class="dm-progress-track"><div class="dm-progress-fill" style="width:${pct}%"></div></div>`;
-    return wrap;
+    `;
   }
 
-  private buildSuccess() {
-    const wrap = document.createElement("div");
-    wrap.className = "dm-success";
-    wrap.innerHTML = `<span>✓</span><span>Package saved.</span>`;
-    return wrap;
+  /** Usage-restrictions banner — shown only for attribution/restrictive
+   *  styles. The required checkbox gates the primary download button. */
+  private buildLicenceBanner(): TemplateResult | typeof nothing {
+    const style = this.currentStyle;
+    if (!style || !this.needsAck) return nothing;
+    return html`
+      <div class="dm-licence">
+        <div class="dm-licence-title">Usage restrictions</div>
+        <div class="dm-licence-body">
+          Review how this basemap may be used before downloading — you are
+          responsible for complying with its terms.
+        </div>
+        ${this.buildUsageList(style)}
+        <label class="dm-licence-check">
+          <input
+            type="checkbox"
+            class="dm-licence-checkbox"
+            .checked=${this.acknowledged}
+            @change=${(e: Event) =>
+              (this.acknowledged = (e.target as HTMLInputElement).checked)}
+          />
+          <span>
+            I'll comply with ${this.renderTermsLink(style)} when storing &
+            redistributing the downloaded tiles.
+          </span>
+        </label>
+      </div>
+    `;
   }
 
-  private buildPrimaryButton() {
-    const btn = document.createElement("button");
-    btn.className = "dm-primary";
-    btn.dataset.dmSection = "primary";
+  /** "<style> terms of use" — a link when the source publishes terms, plain
+   *  bold text otherwise. Stops click propagation so opening the link doesn't
+   *  also toggle the acknowledgement checkbox. */
+  private renderTermsLink(style: AppStyle): TemplateResult {
+    const label = `${style.name}'s terms of use`;
+    return style.termsUrl
+      ? html`<a
+          class="dm-licence-terms"
+          href=${style.termsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          @click=${(e: Event) => e.stopPropagation()}
+          >${label}</a
+        >`
+      : html`<b>${label}</b>`;
+  }
+
+  /** Offline / commercial / redistribution / attribution verdicts, each with a
+   *  Material icon and a hover/focus tooltip carrying the detail text.
+   *  Attribution is synthesised — every gated source requires it. */
+  private buildUsageList(style: AppStyle): TemplateResult {
+    const r = getRestrictions(style);
+    const curated = style.restrictions != null;
+    const rows: { label: string; verdict: UsageVerdict; note: string }[] = [
+      { label: USAGE_ASPECT_LABELS.offline, ...r.offline },
+      { label: USAGE_ASPECT_LABELS.commercial, ...r.commercial },
+      { label: USAGE_ASPECT_LABELS.redistribution, ...r.redistribution },
+      {
+        label: "Attribution",
+        verdict: curated ? "conditional" : "unknown",
+        note: curated
+          ? "This source must be credited wherever the map is shown."
+          : "Not verified — confirm the provider's attribution requirement.",
+      },
+    ];
+    return html`
+      <div class="dm-usage">
+        ${rows.map((row) => {
+          const color = VERDICT_COLORS[row.verdict];
+          return html`
+            <div class="dm-usage-row">
+              <svg
+                class="dm-usage-icon"
+                viewBox="0 0 24 24"
+                style="fill:${color}"
+                aria-hidden="true"
+              >
+                <path d=${VERDICT_ICON_PATHS[row.verdict]} />
+              </svg>
+              <span class="dm-usage-label">${row.label}</span>
+              <span
+                class="dm-usage-verdict"
+                style="color:${color}"
+                tabindex="0"
+                aria-label=${`${VERDICT_LABELS[row.verdict]}. ${row.note}`}
+              >
+                ${VERDICT_LABELS[row.verdict]}
+                <span class="dm-tip" aria-hidden="true">${row.note}</span>
+              </span>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private buildErrorBanner(): TemplateResult {
+    return html`
+      <div class="dm-warn dm-warn-hard">
+        <span class="dm-warn-icon">⛔</span><span>${this.errorText ?? ""}</span>
+      </div>
+    `;
+  }
+
+  private buildProgress(): TemplateResult {
+    const pct = Math.round(this.progress * 100);
+    return html`
+      <div class="dm-progress">
+        <div class="dm-progress-row">
+          <span>Downloading…</span>
+          <span class="dm-progress-pct">${pct}%</span>
+        </div>
+        <div class="dm-progress-track">
+          <div class="dm-progress-fill" style="width:${pct}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  private buildSuccess(): TemplateResult {
+    return html`
+      <div class="dm-success"><span>✓</span><span>Package saved.</span></div>
+    `;
+  }
+
+  private onPrimaryClick = () => {
+    if (this.status === "success") {
+      this.close();
+    } else if (this.status === "error") {
+      this.startDownload();
+    } else if (this.warnLevel === "huge") {
+      this.openHugeConfirm();
+    } else {
+      this.startDownload();
+    }
+  };
+
+  private buildPrimaryButton(): TemplateResult {
     const isDownloading = this.status === "downloading";
     const isHuge = this.status === "idle" && this.warnLevel === "huge";
-    btn.disabled = isDownloading || (this.status === "idle" && !this.canStart);
-    btn.classList.toggle("dm-primary-disabled", btn.disabled);
-    btn.classList.toggle("dm-primary-error", this.status === "error");
-    btn.classList.toggle("dm-primary-success", this.status === "success");
-    btn.classList.toggle("dm-primary-huge", isHuge && !btn.disabled);
+    const disabled =
+      isDownloading || (this.status === "idle" && !this.canStart);
 
     let label: string;
     if (this.status === "idle") {
@@ -691,38 +788,41 @@ export class DownloadModal {
       label = "Done";
     }
 
-    if (isDownloading) {
-      btn.innerHTML = `
-        <svg class="dm-spin" width="14" height="14" viewBox="0 0 14 14">
-          <circle cx="7" cy="7" r="5" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="2" />
-          <path d="M12 7a5 5 0 0 0-5-5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" />
-        </svg>
-        <span>${label}</span>`;
-    } else {
-      btn.textContent = label;
-    }
-    btn.addEventListener("click", () => {
-      if (this.status === "success") {
-        this.close();
-      } else if (this.status === "error") {
-        this.startDownload();
-      } else if (this.warnLevel === "huge") {
-        this.openHugeConfirm();
-      } else {
-        this.startDownload();
-      }
-    });
-    return btn;
+    return html`
+      <button
+        class=${classMap({
+          "dm-primary": true,
+          "dm-primary-disabled": disabled,
+          "dm-primary-error": this.status === "error",
+          "dm-primary-success": this.status === "success",
+          "dm-primary-huge": isHuge && !disabled,
+        })}
+        ?disabled=${disabled}
+        @click=${this.onPrimaryClick}
+      >
+        ${isDownloading
+          ? html`
+              <svg class="dm-spin" width="14" height="14" viewBox="0 0 14 14">
+                <circle cx="7" cy="7" r="5" fill="none"
+                  stroke="rgba(255,255,255,.35)" stroke-width="2" />
+                <path d="M12 7a5 5 0 0 0-5-5" fill="none" stroke="#fff"
+                  stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <span>${label}</span>
+            `
+          : label}
+      </button>
+    `;
   }
 
   /** Modal-on-modal confirmation gate for huge downloads. The user must type
-   *  the rounded estimated size in MB before the override button enables. */
+   *  the rounded estimated size in MB before the override button enables.
+   *  Kept imperative — body-appended, no shared reactive state. */
   private openHugeConfirm() {
     if (!this.canStart) return;
     this.closeHugeConfirm();
     const tiles = this.tileCount;
-    const sizeMB = this.sizeMB;
-    const expected = String(Math.round(sizeMB));
+    const expected = String(Math.round(this.sizeMB));
 
     const backdrop = document.createElement("div");
     backdrop.className = "dm-huge-backdrop";
@@ -786,51 +886,11 @@ export class DownloadModal {
     this.hugeConfirmEl = null;
   }
 
-  /** Update only the parts of the form that depend on maxZoom. We deliberately
-   *  do NOT call render() here — that would rebuild the slider element mid-drag
-   *  and break native pointer capture (you'd only get one zoom-level per drag). */
-  private softUpdate() {
-    if (this.previewMap) {
-      this.previewMap.map.easeTo({ zoom: this.maxZoom, duration: 250 });
-    }
-    const zoomBadge = this.el.querySelector(".dm-preview-zoom");
-    if (zoomBadge) zoomBadge.textContent = `Preview · zoom ${this.maxZoom}`;
-
-    const estimateVal = this.el.querySelector<HTMLElement>(".dm-estimate-val");
-    if (estimateVal) {
-      estimateVal.textContent = this.estimateText();
-      estimateVal.classList.toggle(
-        "dm-estimate-provisional",
-        !this.sizeIsFromSample,
-      );
-    }
-
-    // Swap the warning banner contents without touching the surrounding form.
-    const warnSlots = this.el.querySelectorAll<HTMLDivElement>(
-      '[data-dm-section="warn-slot"]',
-    );
-    warnSlots.forEach((slot) => {
-      slot.replaceChildren();
-      const banner = this.buildWarning();
-      if (banner) slot.appendChild(banner);
-    });
-
-    // The primary button's label + colour flip at the huge threshold — rebuild
-    // it in place so the slider keeps it in sync.
-    const primary = this.el.querySelector<HTMLButtonElement>(
-      '[data-dm-section="primary"]',
-    );
-    if (primary && this.status === "idle") {
-      primary.replaceWith(this.buildPrimaryButton());
-    }
-  }
-
   private startDownload() {
     if (!this.currentStyle || !this.currentGeoBbox) return;
     this.status = "downloading";
     this.progress = 0;
     this.errorText = null;
-    this.render();
 
     this.controller = this.opts.onDownload(
       {
@@ -847,16 +907,18 @@ export class DownloadModal {
             this.status = "success";
             this.progress = 1;
           }
-          this.render();
         },
         onError: (msg) => {
           this.status = "error";
           this.errorText = msg;
-          this.render();
         },
       },
     );
   }
+}
+
+if (!customElements.get("download-modal")) {
+  customElements.define("download-modal", DownloadModal);
 }
 
 /** Format a byte count as KB / MB / GB. We avoid `0.0 MB` rounding for small

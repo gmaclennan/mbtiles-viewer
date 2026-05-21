@@ -1,6 +1,12 @@
+import { html, nothing, type TemplateResult } from "lit";
+import { classMap } from "lit/directives/class-map.js";
+import { createRef, ref } from "lit/directives/ref.js";
+import { repeat } from "lit/directives/repeat.js";
+import { LightElement } from "./lit-base.ts";
 import {
   PRESET_STYLES,
   PRESET_CATEGORIES,
+  CURATED_PRESET_IDS,
   CATEGORY_LABELS,
   LICENSE_COLORS,
   LICENSE_LABELS,
@@ -35,6 +41,13 @@ import {
 const PREVIEW_ZOOM = 12;
 
 type Tab = "browse" | "recents" | "custom" | "mbtiles";
+
+const TAB_LABELS: Record<Tab, string> = {
+  browse: "Browse",
+  recents: "Recents",
+  custom: "Custom URL",
+  mbtiles: ".mbtiles file",
+};
 
 /** A row in the Browse grid — a curated preset or a QMS catalogue entry. */
 type BrowseEntry =
@@ -141,64 +154,108 @@ function fallbackBg(category: StyleCategory, tone: string): string {
   return FALLBACK_BG[`${category}-${tone}`] ?? "#ccc";
 }
 
-export class StylePicker {
-  readonly el: HTMLDivElement;
-  private opts: StylePickerOptions;
-  private currentStyleId: string | null = null;
-  private tab: Tab = "browse";
-  private customUrl = "";
-  private token = "";
-  /** Comma-separated subdomain list for `{subdomain}`/`{s}` templates. */
-  private subdomainText = "";
-  /** Tile scheme chosen in the Custom URL panel for tile-template sources. */
-  private scheme: TileScheme = "xyz";
-  private validating = false;
-  private validateMsg: { ok: boolean; text: string } | null = null;
-  private bodyEl: HTMLDivElement;
-  private tabsEl: HTMLDivElement;
-  private isOpen = false;
-  /** Map center used to pick a preview tile per card. */
-  private previewCenter: [number, number] = [0, 51.5];
-  private recents: RecentEntry[] = [];
-  private filter: FilterState = {
-    curated: true,
-    categories: new Set(),
-    kinds: new Set(),
+const STAR_SVG = html`<svg
+  class="sp-star"
+  width="11"
+  height="11"
+  viewBox="0 0 12 12"
+  fill="currentColor"
+>
+  <path d="M6 1l1.5 3.2 3.5.4-2.6 2.4.7 3.4L6 8.7 2.9 10.4l.7-3.4L1 4.6l3.5-.4L6 1z" />
+</svg>`;
+
+/** Immutable Set toggle — Lit change detection is identity-based, so the whole
+ *  `filter` object must be replaced for a re-render. */
+function toggledSet<T>(set: Set<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+/** A Browse entry is "curated" when it's a preset in the curated id set. */
+function isCuratedEntry(e: BrowseEntry): boolean {
+  return e.source === "preset" && CURATED_PRESET_IDS.has(e.preset.id);
+}
+
+export class StylePicker extends LightElement {
+  static properties = {
+    currentStyleId: { state: true },
+    tab: { state: true },
+    customUrl: { state: true },
+    token: { state: true },
+    subdomainText: { state: true },
+    scheme: { state: true },
+    validating: { state: true },
+    validateMsg: { state: true },
+    isOpen: { state: true },
+    previewCenter: { state: true },
+    recents: { state: true },
+    filter: { state: true },
+    dropHot: { state: true },
   };
+
+  // Reactive state.
+  declare currentStyleId: string | null;
+  declare tab: Tab;
+  declare customUrl: string;
+  declare token: string;
+  /** Comma-separated subdomain list for `{subdomain}`/`{s}` templates. */
+  declare subdomainText: string;
+  /** Tile scheme chosen in the Custom URL panel for tile-template sources. */
+  declare scheme: TileScheme;
+  declare validating: boolean;
+  declare validateMsg: { ok: boolean; text: string } | null;
+  declare isOpen: boolean;
+  /** Map center used to pick a preview tile per card. */
+  declare previewCenter: [number, number];
+  declare recents: RecentEntry[];
+  declare filter: FilterState;
+  /** Hover state for the desktop .mbtiles drop zone. */
+  declare dropHot: boolean;
+
+  // Non-reactive.
+  private opts!: StylePickerOptions;
   /** Vendored QMS catalogue — no network request. */
-  private qmsEntries: QmsCatalogueEntry[] = QMS_CATALOGUE;
+  private qmsEntries = QMS_CATALOGUE;
+  private fileInputRef = createRef<HTMLInputElement>();
 
-  constructor(options: StylePickerOptions) {
-    this.opts = options;
-    this.el = document.createElement("div");
-    this.el.className = "sp-backdrop hidden";
-    this.el.addEventListener("click", (e) => {
-      if (e.target === this.el && !this.opts.isMobile()) this.close();
+  constructor() {
+    super();
+    this.currentStyleId = null;
+    this.tab = "browse";
+    this.customUrl = "";
+    this.token = "";
+    this.subdomainText = "";
+    this.scheme = "xyz";
+    this.validating = false;
+    this.validateMsg = null;
+    this.isOpen = false;
+    this.previewCenter = [0, 51.5];
+    this.recents = [];
+    this.filter = { curated: true, categories: new Set(), kinds: new Set() };
+    this.dropHot = false;
+    // Backdrop click-to-close — desktop only, and only on the host itself.
+    this.addEventListener("click", (e) => {
+      if (e.target === this && !this.opts?.isMobile()) this.close();
     });
+  }
 
-    const inner = document.createElement("div");
-    inner.className = "sp-inner";
-    inner.addEventListener("click", (e) => e.stopPropagation());
-    this.el.appendChild(inner);
+  /** Inject runtime options. Custom-element constructors take no arguments. */
+  init(options: StylePickerOptions): this {
+    this.opts = options;
+    return this;
+  }
 
-    const header = document.createElement("div");
-    header.className = "sp-header";
-    header.innerHTML = `
-      <div class="sp-title">Map style</div>
-      <button class="sp-close" aria-label="Close">×</button>
-    `;
-    header
-      .querySelector(".sp-close")
-      ?.addEventListener("click", () => this.close());
-    inner.appendChild(header);
+  /** The component is its own root element. */
+  get el(): this {
+    return this;
+  }
 
-    this.tabsEl = document.createElement("div");
-    this.tabsEl.className = "sp-tabs";
-    inner.appendChild(this.tabsEl);
-
-    this.bodyEl = document.createElement("div");
-    this.bodyEl.className = "sp-body";
-    inner.appendChild(this.bodyEl);
+  connectedCallback() {
+    super.connectedCallback();
+    this.classList.add("sp-backdrop");
+    if (!this.isOpen) this.classList.add("hidden");
   }
 
   open(
@@ -208,74 +265,74 @@ export class StylePicker {
     this.currentStyleId = currentStyleId;
     this.previewCenter = mapCenter;
     this.recents = loadRecents();
-    // "Curated" is selected by default every time the modal opens.
-    this.filter = {
-      curated: true,
-      categories: new Set(),
-      kinds: new Set(),
-    };
+    // The filter / selected chips persist across opens — don't reset them.
     // Don't strand the user on the Recents tab if it's no longer available.
     if (this.tab === "recents" && this.recents.length === 0) {
       this.tab = "browse";
     }
     this.isOpen = true;
-    this.el.classList.toggle("sp-mobile", this.opts.isMobile());
-    this.el.classList.remove("hidden");
-    this.renderTabs();
-    this.render();
-  }
-
-  /** (Re)build the tab strip. Recents only appears when there are recents. */
-  private renderTabs() {
-    this.tabsEl.replaceChildren();
-    const tabs: Tab[] =
-      this.recents.length > 0
-        ? ["browse", "recents", "custom", "mbtiles"]
-        : ["browse", "custom", "mbtiles"];
-    for (const t of tabs) {
-      const btn = document.createElement("button");
-      btn.className = "sp-tab";
-      btn.dataset.tab = t;
-      btn.textContent =
-        t === "browse"
-          ? "Browse"
-          : t === "recents"
-            ? "Recents"
-            : t === "custom"
-              ? "Custom URL"
-              : ".mbtiles file";
-      btn.addEventListener("click", () => this.setTab(t));
-      this.tabsEl.appendChild(btn);
-    }
   }
 
   close() {
     this.isOpen = false;
-    this.el.classList.add("hidden");
+  }
+
+  protected updated() {
+    this.classList.toggle("hidden", !this.isOpen);
+    this.classList.toggle("sp-mobile", this.opts.isMobile());
+  }
+
+  /** Tab order — Recents only appears when there are recents. */
+  private get tabs(): Tab[] {
+    return this.recents.length > 0
+      ? ["browse", "recents", "custom", "mbtiles"]
+      : ["browse", "custom", "mbtiles"];
   }
 
   private setTab(t: Tab) {
     this.tab = t;
     this.validateMsg = null;
-    this.render();
   }
 
-  private render() {
-    if (!this.isOpen) return;
-    Array.from(this.tabsEl.children).forEach((c) => {
-      const btn = c as HTMLButtonElement;
-      btn.classList.toggle("sp-tab-active", btn.dataset.tab === this.tab);
-    });
-    this.bodyEl.innerHTML = "";
-    if (this.tab === "browse") this.renderBrowse();
-    else if (this.tab === "recents") this.renderRecents();
-    else if (this.tab === "custom") this.renderCustom();
-    else this.renderMbtiles();
+  render() {
+    if (!this.isOpen) return nothing;
+    return html`
+      <div class="sp-inner">
+        <div class="sp-header">
+          <div class="sp-title">Map style</div>
+          <button class="sp-close" aria-label="Close" @click=${() => this.close()}>×</button>
+        </div>
+        <div class="sp-tabs">
+          ${this.tabs.map(
+            (t) => html`
+              <button
+                class=${classMap({
+                  "sp-tab": true,
+                  "sp-tab-active": t === this.tab,
+                })}
+                data-tab=${t}
+                @click=${() => this.setTab(t)}
+              >
+                ${TAB_LABELS[t]}
+              </button>
+            `,
+          )}
+        </div>
+        <div class="sp-body">${this.renderBody()}</div>
+      </div>
+    `;
+  }
+
+  private renderBody(): TemplateResult {
+    if (this.tab === "browse") return this.renderBrowse();
+    if (this.tab === "recents") return this.renderRecents();
+    if (this.tab === "custom") return this.renderCustom();
+    return this.renderMbtiles();
   }
 
   // ─── Browse tab ─────────────────────────────────────────────────────────
 
-  /** All Browse rows — presets always, QMS once loaded. */
+  /** All Browse rows — curated presets plus the vendored QMS catalogue. */
   private allEntries(): BrowseEntry[] {
     const out: BrowseEntry[] = PRESET_STYLES.map((preset) => ({
       source: "preset" as const,
@@ -294,27 +351,15 @@ export class StylePicker {
     return e.source === "preset" ? e.preset.kind : "raster";
   }
 
-  /** Does an entry pass the filter, optionally ignoring one chip group so we
-   *  can compute "how many would this chip add" counts. */
-  private passes(e: BrowseEntry, ignore?: "curated" | "category" | "kind") {
+  /** Does an entry pass the active filter? Curated is exclusive — when it's on
+   *  only the curated set shows, and the category/kind chips are cleared. */
+  private passes(e: BrowseEntry) {
     const f = this.filter;
-    if (ignore !== "curated" && f.curated && e.source !== "preset") {
+    if (f.curated) return isCuratedEntry(e);
+    if (f.categories.size && !f.categories.has(this.entryCategory(e))) {
       return false;
     }
-    if (
-      ignore !== "category" &&
-      f.categories.size &&
-      !f.categories.has(this.entryCategory(e))
-    ) {
-      return false;
-    }
-    if (
-      ignore !== "kind" &&
-      f.kinds.size &&
-      !f.kinds.has(this.entryKind(e))
-    ) {
-      return false;
-    }
+    if (f.kinds.size && !f.kinds.has(this.entryKind(e))) return false;
     return true;
   }
 
@@ -333,60 +378,42 @@ export class StylePicker {
     return list;
   }
 
-  private renderBrowse() {
-    const wrap = document.createElement("div");
-    wrap.className = "sp-browse";
-
-    wrap.appendChild(this.buildChipRow());
-
-    const head = document.createElement("div");
-    head.className = "sp-results-head";
-    const results = this.filteredEntries();
-    const countEl = document.createElement("span");
-    countEl.className = "sp-results-count";
-    countEl.textContent = `${results.length} ${
-      results.length === 1 ? "result" : "results"
-    }`;
-    head.appendChild(countEl);
-    if (this.filter.curated || this.filter.categories.size || this.filter.kinds.size) {
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "sp-clear-btn";
-      clear.textContent = "Clear";
-      clear.addEventListener("click", () => {
-        this.filter = {
-          curated: false,
-          categories: new Set(),
-          kinds: new Set(),
-        };
-        this.render();
-      });
-      head.appendChild(clear);
-    }
-    wrap.appendChild(head);
-
-    if (results.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "sp-empty";
-      empty.innerHTML = `<div class="sp-empty-mark">∅</div>
-        <div>Nothing matches those filters.</div>
-        <div class="sp-empty-sub">Try clearing a filter.</div>`;
-      wrap.appendChild(empty);
-    } else {
-      const grid = document.createElement("div");
-      grid.className = "sp-preset-grid";
-      grid.classList.toggle("sp-preset-grid-mobile", this.opts.isMobile());
-      for (const e of results) grid.appendChild(this.browseCard(e));
-      wrap.appendChild(grid);
-    }
-
-    this.bodyEl.appendChild(wrap);
+  private entryId(e: BrowseEntry): string {
+    return e.source === "preset" ? e.preset.id : `qms-${e.qms.qmsId}`;
   }
 
-  private buildChipRow(): HTMLDivElement {
-    const row = document.createElement("div");
-    row.className = "sp-chip-row";
+  private renderBrowse(): TemplateResult {
+    const results = this.filteredEntries();
+    return html`
+      <div class="sp-browse">
+        ${this.buildChipRow()}
+        ${results.length === 0
+          ? html`
+              <div class="sp-empty">
+                <div class="sp-empty-mark">∅</div>
+                <div>Nothing matches those filters.</div>
+                <div class="sp-empty-sub">Tap All to show everything.</div>
+              </div>
+            `
+          : html`
+              <div
+                class=${classMap({
+                  "sp-preset-grid": true,
+                  "sp-preset-grid-mobile": this.opts.isMobile(),
+                })}
+              >
+                ${repeat(
+                  results,
+                  (e) => this.entryId(e),
+                  (e) => this.browseCard(e),
+                )}
+              </div>
+            `}
+      </div>
+    `;
+  }
 
+  private buildChipRow(): TemplateResult {
     interface ChipDef {
       label: string;
       active: boolean;
@@ -397,28 +424,47 @@ export class StylePicker {
     const all = this.allEntries();
     const chips: ChipDef[] = [];
     chips.push({
+      label: "All",
+      // Auto-active whenever no other chip is selected.
+      active:
+        !this.filter.curated &&
+        this.filter.categories.size === 0 &&
+        this.filter.kinds.size === 0,
+      count: all.length,
+      toggle: () => {
+        this.filter = {
+          curated: false,
+          categories: new Set(),
+          kinds: new Set(),
+        };
+      },
+    });
+    chips.push({
       label: "Curated",
       star: true,
       active: this.filter.curated,
-      count: all.filter(
-        (e) => e.source === "preset" && this.passes(e, "curated"),
-      ).length,
+      count: all.filter(isCuratedEntry).length,
       toggle: () => {
-        this.filter.curated = !this.filter.curated;
-        this.render();
+        // Curated is exclusive — turning it on clears the other chips;
+        // turning it off leaves the gallery unfiltered.
+        this.filter = this.filter.curated
+          ? { ...this.filter, curated: false }
+          : { curated: true, categories: new Set(), kinds: new Set() };
       },
     });
     for (const cat of PRESET_CATEGORIES) {
       chips.push({
         label: cat.label,
         active: this.filter.categories.has(cat.id),
-        count: all.filter(
-          (e) =>
-            this.entryCategory(e) === cat.id && this.passes(e, "category"),
-        ).length,
+        // Count of every item in the category — Curated is not an "and" filter.
+        count: all.filter((e) => this.entryCategory(e) === cat.id).length,
         toggle: () => {
-          toggleSet(this.filter.categories, cat.id);
-          this.render();
+          // Selecting any category chip turns Curated off.
+          this.filter = {
+            curated: false,
+            categories: toggledSet(this.filter.categories, cat.id),
+            kinds: this.filter.kinds,
+          };
         },
       });
     }
@@ -426,39 +472,45 @@ export class StylePicker {
       chips.push({
         label: kind === "vector" ? "Vector" : "Raster",
         active: this.filter.kinds.has(kind),
-        count: all.filter(
-          (e) => this.entryKind(e) === kind && this.passes(e, "kind"),
-        ).length,
+        count: all.filter((e) => this.entryKind(e) === kind).length,
         toggle: () => {
-          toggleSet(this.filter.kinds, kind);
-          this.render();
+          this.filter = {
+            curated: false,
+            categories: this.filter.categories,
+            kinds: toggledSet(this.filter.kinds, kind),
+          };
         },
       });
     }
 
-    for (const c of chips) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "sp-chip";
-      btn.classList.toggle("sp-chip-active", c.active);
-      const dim = c.count === 0 && !c.active;
-      btn.classList.toggle("sp-chip-dim", dim);
-      btn.disabled = dim;
-      btn.innerHTML = `${c.star ? STAR_SVG : ""}<span class="sp-chip-label"></span><span class="sp-chip-count">${c.count}</span>`;
-      btn.querySelector(".sp-chip-label")!.textContent = c.label;
-      if (!dim) btn.addEventListener("click", c.toggle);
-      row.appendChild(btn);
-    }
-    return row;
+    return html`
+      <div class="sp-chip-row">
+        ${chips.map((c) => {
+          const dim = c.count === 0 && !c.active;
+          return html`
+            <button
+              type="button"
+              class=${classMap({
+                "sp-chip": true,
+                "sp-chip-active": c.active,
+                "sp-chip-dim": dim,
+              })}
+              ?disabled=${dim}
+              @click=${c.toggle}
+            >
+              ${c.star ? STAR_SVG : nothing}
+              <span class="sp-chip-label">${c.label}</span>
+              <span class="sp-chip-count">${c.count}</span>
+            </button>
+          `;
+        })}
+      </div>
+    `;
   }
 
-  private browseCard(e: BrowseEntry): HTMLButtonElement {
-    const card = document.createElement("button");
-    card.className = "sp-preset-card";
-    card.type = "button";
-
+  private browseCard(e: BrowseEntry): TemplateResult {
     const isPreset = e.source === "preset";
-    const id = isPreset ? e.preset.id : `qms-${e.qms.qmsId}`;
+    const id = this.entryId(e);
     const name = isPreset ? e.preset.name : e.qms.name;
     const desc = isPreset ? e.preset.desc : e.qms.desc;
     const category = this.entryCategory(e);
@@ -466,162 +518,151 @@ export class StylePicker {
     const kind = this.entryKind(e);
     const license = isPreset ? e.preset.license : e.qms.license;
     const tileUrl = isPreset ? e.preset.previewTileUrl : e.qms.url;
-
-    if (this.currentStyleId === id) card.classList.add("sp-preset-active");
-
-    // ── Thumbnail ──
-    const thumb = document.createElement("div");
-    thumb.className = "sp-thumb";
-    thumb.style.background = fallbackBg(category, tone);
     const scheme = isPreset ? e.preset.scheme : undefined;
+    const previewSubdomains = isPreset ? e.preset.subdomains : undefined;
     const pz = (isPreset && e.preset.previewZoom) || PREVIEW_ZOOM;
     const [lng, lat] = this.previewCenter;
     const { x, y } = lngLatToTile(lng, lat, pz);
     // TMS sources count y from the bottom — flip it for the preview tile.
     const ty = scheme === "tms" ? 2 ** pz - 1 - y : y;
-    const img = document.createElement("img");
-    img.className = "sp-thumb-img";
-    img.alt = "";
-    img.referrerPolicy = "no-referrer";
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.src = fillTileUrl(tileUrl, pz, x, ty);
-    img.addEventListener("error", () => img.remove());
-    thumb.appendChild(img);
 
-    // Curated presets get a gold-star badge; QMS entries show their category
-    // in the meta strip instead of a thumbnail overlay.
-    if (isPreset) {
-      const star = document.createElement("div");
-      star.className = "sp-badge-star";
-      star.title = "Curated pick";
-      star.innerHTML = STAR_SVG;
-      thumb.appendChild(star);
-    }
-    card.appendChild(thumb);
-
-    // ── Meta strip ──
-    const meta = document.createElement("div");
-    meta.className = "sp-preset-meta";
-
-    const nameRow = document.createElement("div");
-    nameRow.className = "sp-preset-name-row";
-    const nameEl = document.createElement("div");
-    nameEl.className = "sp-preset-name";
-    nameEl.textContent = name;
-    nameRow.appendChild(nameEl);
-    const dot = document.createElement("span");
-    dot.className = "sp-license-dot";
-    dot.style.background = LICENSE_COLORS[license];
-    dot.title = LICENSE_LABELS[license];
-    nameRow.appendChild(dot);
-    meta.appendChild(nameRow);
-
-    const descEl = document.createElement("div");
-    descEl.className = "sp-preset-desc";
-    descEl.textContent = desc;
-    meta.appendChild(descEl);
-
-    const tag = document.createElement("div");
-    tag.className = "sp-preset-tag";
-    tag.textContent = isPreset
-      ? `${kind} · ${tone}`
-      : `${kind} · ${CATEGORY_LABELS[category]}`;
-    meta.appendChild(tag);
-    card.appendChild(meta);
-
-    card.addEventListener("click", () => {
-      this.opts.onSelectStyle(
-        isPreset ? e.preset : qmsToStyle(e.qms),
-      );
-      this.close();
-    });
-    return card;
+    return html`
+      <button
+        class=${classMap({
+          "sp-preset-card": true,
+          "sp-preset-active": this.currentStyleId === id,
+        })}
+        type="button"
+        @click=${() => {
+          this.opts.onSelectStyle(isPreset ? e.preset : qmsToStyle(e.qms));
+          this.close();
+        }}
+      >
+        <div class="sp-thumb" style="background:${fallbackBg(category, tone)}">
+          <img
+            class="sp-thumb-img"
+            alt=""
+            referrerpolicy="no-referrer"
+            loading="lazy"
+            decoding="async"
+            src=${fillTileUrl(tileUrl, pz, x, ty, previewSubdomains)}
+            @error=${(ev: Event) =>
+              ((ev.target as HTMLElement).style.display = "none")}
+          />
+          ${isPreset
+            ? html`<div class="sp-badge-star" title="Curated pick">
+                ${STAR_SVG}
+              </div>`
+            : nothing}
+        </div>
+        <div class="sp-preset-meta">
+          <div class="sp-preset-name-row">
+            <div class="sp-preset-name">${name}</div>
+            <span
+              class="sp-license-dot"
+              style="background:${LICENSE_COLORS[license]}"
+              title=${LICENSE_LABELS[license]}
+            ></span>
+          </div>
+          <div class="sp-preset-desc">${desc}</div>
+          <div class="sp-preset-tag">
+            ${kind} · ${CATEGORY_LABELS[category]}
+          </div>
+        </div>
+      </button>
+    `;
   }
 
   // ─── Recents tab ────────────────────────────────────────────────────────
 
-  private renderRecents() {
-    const grid = document.createElement("div");
-    grid.className = "sp-preset-grid";
-    grid.classList.toggle("sp-preset-grid-mobile", this.opts.isMobile());
-    for (const r of this.recents) {
-      grid.appendChild(this.recentCard(r));
-    }
-    this.bodyEl.appendChild(grid);
+  private renderRecents(): TemplateResult {
+    return html`
+      <div
+        class=${classMap({
+          "sp-preset-grid": true,
+          "sp-preset-grid-mobile": this.opts.isMobile(),
+        })}
+      >
+        ${repeat(
+          this.recents,
+          (r) => r.id,
+          (r) => this.recentCard(r),
+        )}
+      </div>
+    `;
   }
 
-  private recentCard(r: RecentEntry) {
-    const card = document.createElement("button");
-    card.className = "sp-preset-card";
-    if (this.currentStyleId === "custom") card.classList.add("sp-preset-active");
+  private removeRecentEntry(r: RecentEntry) {
+    removeRecent(r.id);
+    this.recents = loadRecents();
+    if (this.recents.length === 0) this.tab = "browse";
+  }
 
-    const thumb = document.createElement("div");
-    thumb.className = "sp-thumb";
-    thumb.style.background = "#dcdad4";
-    if (r.previewKind === "raster" && r.previewTileUrl) {
-      const [lng, lat] = this.previewCenter;
-      const { x, y } = lngLatToTile(lng, lat, PREVIEW_ZOOM);
-      const url = fillTileUrl(
-        r.previewTileUrl,
-        PREVIEW_ZOOM,
-        x,
-        y,
-        r.subdomains,
-      );
-      const img = document.createElement("img");
-      img.className = "sp-thumb-img";
-      img.alt = "";
-      img.referrerPolicy = "no-referrer";
-      img.crossOrigin = "anonymous";
-      img.loading = "lazy";
-      img.decoding = "async";
-      img.src = url;
-      img.addEventListener("error", () => img.remove());
-      thumb.appendChild(img);
-    }
-    card.appendChild(thumb);
-
-    const meta = document.createElement("div");
-    meta.className = "sp-preset-meta";
+  private recentCard(r: RecentEntry): TemplateResult {
     let host = r.url;
     try {
       host = new URL(r.url).hostname.replace(/^www\./, "");
     } catch {
       /* leave as-is */
     }
-    meta.innerHTML = `
-      <div class="sp-preset-name"></div>
-      <div class="sp-preset-desc"></div>
-      <div class="sp-recent-row">
-        <span class="sp-preset-tag"></span>
-        <button class="sp-recent-remove" type="button" aria-label="Remove from recents">×</button>
-      </div>`;
-    meta.querySelector(".sp-preset-name")!.textContent = host;
-    meta.querySelector(".sp-preset-desc")!.textContent = r.url;
-    meta.querySelector(".sp-preset-tag")!.textContent = `${r.kind} · custom`;
-    card.appendChild(meta);
-
-    card.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).classList.contains("sp-recent-remove")) {
-        return;
-      }
-      this.opts.onSelectStyle(this.styleFromRecent(r));
-      this.close();
-    });
-    meta
-      .querySelector<HTMLButtonElement>(".sp-recent-remove")!
-      .addEventListener("click", (e) => {
-        e.stopPropagation();
-        removeRecent(r.id);
-        this.recents = loadRecents();
-        this.renderTabs();
-        if (this.recents.length === 0) {
-          this.tab = "browse";
-        }
-        this.render();
-      });
-    return card;
+    let imgUrl: string | null = null;
+    if (r.previewKind === "raster" && r.previewTileUrl) {
+      const [lng, lat] = this.previewCenter;
+      const { x, y } = lngLatToTile(lng, lat, PREVIEW_ZOOM);
+      imgUrl = fillTileUrl(r.previewTileUrl, PREVIEW_ZOOM, x, y, r.subdomains);
+    }
+    return html`
+      <button
+        class=${classMap({
+          "sp-preset-card": true,
+          "sp-preset-active": this.currentStyleId === "custom",
+        })}
+        type="button"
+        @click=${(ev: Event) => {
+          if (
+            (ev.target as HTMLElement).classList.contains("sp-recent-remove")
+          ) {
+            return;
+          }
+          this.opts.onSelectStyle(this.styleFromRecent(r));
+          this.close();
+        }}
+      >
+        <div class="sp-thumb" style="background:#dcdad4">
+          ${imgUrl
+            ? html`<img
+                class="sp-thumb-img"
+                alt=""
+                referrerpolicy="no-referrer"
+                crossorigin="anonymous"
+                loading="lazy"
+                decoding="async"
+                src=${imgUrl}
+                @error=${(ev: Event) =>
+                  ((ev.target as HTMLElement).style.display = "none")}
+              />`
+            : nothing}
+        </div>
+        <div class="sp-preset-meta">
+          <div class="sp-preset-name">${host}</div>
+          <div class="sp-preset-desc">${r.url}</div>
+          <div class="sp-recent-row">
+            <span class="sp-preset-tag">${r.kind} · custom</span>
+            <button
+              class="sp-recent-remove"
+              type="button"
+              aria-label="Remove from recents"
+              @click=${(ev: Event) => {
+                ev.stopPropagation();
+                this.removeRecentEntry(r);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      </button>
+    `;
   }
 
   private styleFromRecent(r: RecentEntry): CustomStyle {
@@ -642,161 +683,160 @@ export class StylePicker {
 
   // ─── Custom URL tab ─────────────────────────────────────────────────────
 
-  private renderCustom() {
-    const wrap = document.createElement("div");
-    wrap.className = "sp-custom";
-    wrap.innerHTML = `
-      <p class="sp-prose">
-        Paste a link to a Mapbox/MapLibre <code>style.json</code>, a TileJSON,
-        or a tile URL template containing <code>{z}/{x}/{y}</code> or
-        <code>{quadkey}</code>.
-      </p>
-      <input type="url" class="sp-input sp-url" placeholder="https://example.com/style.json" />
-      <div class="sp-scheme-wrap"></div>
-      <div class="sp-token-wrap"></div>
-      <div class="sp-subdomain-wrap"></div>
-      <div class="sp-validate-msg"></div>
-      <button class="sp-validate-btn" type="button">Validate &amp; use</button>
+  private validateBtnDisabled(): boolean {
+    const tokenInfo = detectToken(this.customUrl);
+    return (
+      !this.customUrl ||
+      this.validating ||
+      (tokenInfo.required && !this.token)
+    );
+  }
+
+  private renderCustom(): TemplateResult {
+    const tokenInfo = detectToken(this.customUrl);
+    const disabled = this.validateBtnDisabled();
+    return html`
+      <div class="sp-custom">
+        <p class="sp-prose">
+          Paste a link to a Mapbox/MapLibre <code>style.json</code>, a TileJSON,
+          or a tile URL template containing <code>{z}/{x}/{y}</code> or
+          <code>{quadkey}</code>.
+        </p>
+        <input
+          type="url"
+          class="sp-input sp-url"
+          placeholder="https://example.com/style.json"
+          .value=${this.customUrl}
+          @input=${(e: Event) =>
+            (this.customUrl = (e.target as HTMLInputElement).value)}
+        />
+        ${isTileUrlTemplate(this.customUrl)
+          ? this.renderSchemeSection()
+          : nothing}
+        ${tokenInfo.required ? this.renderTokenSection(tokenInfo) : nothing}
+        ${hasSubdomainPlaceholder(this.customUrl)
+          ? this.renderSubdomainSection()
+          : nothing}
+        <div class="sp-validate-msg">
+          ${this.validateMsg
+            ? html`<div
+                class="sp-msg ${this.validateMsg.ok
+                  ? "sp-msg-ok"
+                  : "sp-msg-err"}"
+              >
+                ${this.validateMsg.text}
+              </div>`
+            : nothing}
+        </div>
+        <button
+          class=${classMap({
+            "sp-validate-btn": true,
+            "sp-btn-disabled": disabled,
+          })}
+          type="button"
+          ?disabled=${disabled}
+          @click=${() => this.validateAndSelect()}
+        >
+          ${this.validating ? "Validating…" : "Validate & use"}
+        </button>
+      </div>
     `;
-    const urlInput = wrap.querySelector<HTMLInputElement>(".sp-url")!;
-    urlInput.value = this.customUrl;
-    urlInput.addEventListener("input", () => {
-      this.customUrl = urlInput.value;
-      this.renderSchemeSection(wrap);
-      this.renderTokenSection(wrap);
-      this.renderSubdomainSection(wrap);
-      this.renderValidateMsg(wrap);
-      this.updateValidateBtn(wrap);
-    });
-
-    this.renderSchemeSection(wrap);
-    this.renderTokenSection(wrap);
-    this.renderSubdomainSection(wrap);
-    this.renderValidateMsg(wrap);
-
-    const btn = wrap.querySelector<HTMLButtonElement>(".sp-validate-btn")!;
-    btn.addEventListener("click", () => this.validateAndSelect(wrap));
-    this.updateValidateBtn(wrap);
-    this.bodyEl.appendChild(wrap);
   }
 
   /** XYZ/TMS picker — only shown for tile-template URLs. */
-  private renderSchemeSection(wrap: HTMLDivElement) {
-    const host = wrap.querySelector<HTMLDivElement>(".sp-scheme-wrap")!;
-    host.innerHTML = "";
-    if (!isTileUrlTemplate(this.customUrl)) return;
-    host.innerHTML = `
-      <div class="sp-scheme-box">
-        <div class="sp-scheme-title">Tile scheme</div>
-        <div class="sp-scheme-options">
-          <button type="button" class="sp-scheme-opt" data-scheme="xyz">
-            <span class="sp-scheme-opt-name">XYZ</span>
-            <span class="sp-scheme-opt-hint">Y axis grows downward (Google / OSM).</span>
-          </button>
-          <button type="button" class="sp-scheme-opt" data-scheme="tms">
-            <span class="sp-scheme-opt-name">TMS</span>
-            <span class="sp-scheme-opt-hint">Y axis grows upward (OGC TMS spec).</span>
-          </button>
+  private renderSchemeSection(): TemplateResult {
+    return html`
+      <div class="sp-scheme-wrap">
+        <div class="sp-scheme-box">
+          <div class="sp-scheme-title">Tile scheme</div>
+          <div class="sp-scheme-options">
+            ${(["xyz", "tms"] as TileScheme[]).map(
+              (s) => html`
+                <button
+                  type="button"
+                  class=${classMap({
+                    "sp-scheme-opt": true,
+                    "sp-scheme-opt-active": this.scheme === s,
+                  })}
+                  data-scheme=${s}
+                  @click=${() => (this.scheme = s)}
+                >
+                  <span class="sp-scheme-opt-name">${s.toUpperCase()}</span>
+                  <span class="sp-scheme-opt-hint">
+                    ${s === "xyz"
+                      ? "Y axis grows downward (Google / OSM)."
+                      : "Y axis grows upward (OGC TMS spec)."}
+                  </span>
+                </button>
+              `,
+            )}
+          </div>
+          <div class="sp-scheme-hint">
+            Tiles appear upside-down or mis-stacked? Toggle this.
+          </div>
         </div>
-        <div class="sp-scheme-hint">
-          Tiles appear upside-down or mis-stacked? Toggle this.
-        </div>
-      </div>`;
-    const opts = host.querySelectorAll<HTMLButtonElement>(".sp-scheme-opt");
-    const paint = () => {
-      opts.forEach((o) =>
-        o.classList.toggle(
-          "sp-scheme-opt-active",
-          o.dataset.scheme === this.scheme,
-        ),
-      );
-    };
-    opts.forEach((o) =>
-      o.addEventListener("click", () => {
-        this.scheme = o.dataset.scheme as TileScheme;
-        paint();
-      }),
-    );
-    paint();
+      </div>
+    `;
   }
 
-  private renderTokenSection(wrap: HTMLDivElement) {
-    const tokenWrap = wrap.querySelector<HTMLDivElement>(".sp-token-wrap")!;
-    tokenWrap.innerHTML = "";
-    const info = detectToken(this.customUrl);
-    if (!info.required) return;
-    tokenWrap.innerHTML = `
-      <div class="sp-token-box">
-        <div class="sp-token-header">
-          <span class="sp-token-provider">${info.providerLabel} access token required</span>
-          <span class="sp-token-param">?${info.paramName}=</span>
+  private renderTokenSection(info: TokenInfo): TemplateResult {
+    return html`
+      <div class="sp-token-wrap">
+        <div class="sp-token-box">
+          <div class="sp-token-header">
+            <span class="sp-token-provider">
+              ${info.providerLabel} access token required
+            </span>
+            <span class="sp-token-param">?${info.paramName}=</span>
+          </div>
+          <input
+            type="text"
+            class="sp-input sp-token-input"
+            placeholder=${info.placeholder ?? ""}
+            autocomplete="off"
+            spellcheck="false"
+            .value=${this.token}
+            @input=${(e: Event) =>
+              (this.token = (e.target as HTMLInputElement).value)}
+          />
+          <div class="sp-token-hint">
+            Appended to the URL at request time. Your token isn't stored or
+            shared.
+          </div>
         </div>
-        <input type="text" class="sp-input sp-token-input"
-               placeholder="${info.placeholder}" autocomplete="off" spellcheck="false" />
-        <div class="sp-token-hint">
-          Appended to the URL at request time. Your token isn't stored or shared.
-        </div>
-      </div>`;
-    const tokenInput = tokenWrap.querySelector<HTMLInputElement>(
-      ".sp-token-input",
-    )!;
-    tokenInput.value = this.token;
-    tokenInput.addEventListener("input", () => {
-      this.token = tokenInput.value;
-      this.updateValidateBtn(wrap);
-    });
+      </div>
+    `;
   }
 
-  private renderSubdomainSection(wrap: HTMLDivElement) {
-    const subWrap = wrap.querySelector<HTMLDivElement>(".sp-subdomain-wrap")!;
-    subWrap.innerHTML = "";
-    if (!hasSubdomainPlaceholder(this.customUrl)) return;
-    subWrap.innerHTML = `
-      <div class="sp-token-box">
-        <div class="sp-token-header">
-          <span class="sp-token-provider">Subdomains</span>
-          <span class="sp-token-param">{subdomain}</span>
+  private renderSubdomainSection(): TemplateResult {
+    return html`
+      <div class="sp-subdomain-wrap">
+        <div class="sp-token-box">
+          <div class="sp-token-header">
+            <span class="sp-token-provider">Subdomains</span>
+            <span class="sp-token-param">{subdomain}</span>
+          </div>
+          <input
+            type="text"
+            class="sp-input sp-token-input sp-subdomain-input"
+            placeholder=${DEFAULT_SUBDOMAIN_TEXT}
+            autocomplete="off"
+            spellcheck="false"
+            .value=${this.subdomainText}
+            @input=${(e: Event) =>
+              (this.subdomainText = (e.target as HTMLInputElement).value)}
+          />
+          <div class="sp-token-hint">
+            Comma-separated hosts to round-robin across (e.g.
+            <code>t0, t1, t2, t3</code> for Bing). Defaults to
+            <code>${DEFAULT_SUBDOMAIN_TEXT}</code>.
+          </div>
         </div>
-        <input type="text" class="sp-input sp-token-input sp-subdomain-input"
-               placeholder="${DEFAULT_SUBDOMAIN_TEXT}" autocomplete="off" spellcheck="false" />
-        <div class="sp-token-hint">
-          Comma-separated hosts to round-robin across (e.g.
-          <code>t0, t1, t2, t3</code> for Bing). Defaults to
-          <code>${DEFAULT_SUBDOMAIN_TEXT}</code>.
-        </div>
-      </div>`;
-    const input = subWrap.querySelector<HTMLInputElement>(
-      ".sp-subdomain-input",
-    )!;
-    input.value = this.subdomainText;
-    input.addEventListener("input", () => {
-      this.subdomainText = input.value;
-    });
+      </div>
+    `;
   }
 
-  private updateValidateBtn(wrap: HTMLDivElement) {
-    const btn = wrap.querySelector<HTMLButtonElement>(".sp-validate-btn")!;
-    const tokenInfo = detectToken(this.customUrl);
-    const disabled =
-      !this.customUrl ||
-      this.validating ||
-      (tokenInfo.required && !this.token);
-    btn.disabled = disabled;
-    btn.classList.toggle("sp-btn-disabled", disabled);
-    btn.textContent = this.validating ? "Validating…" : "Validate & use";
-  }
-
-  private renderValidateMsg(wrap: HTMLDivElement) {
-    const el = wrap.querySelector<HTMLDivElement>(".sp-validate-msg")!;
-    el.innerHTML = "";
-    if (!this.validateMsg) return;
-    const m = document.createElement("div");
-    m.className = `sp-msg ${this.validateMsg.ok ? "sp-msg-ok" : "sp-msg-err"}`;
-    m.textContent = this.validateMsg.text;
-    el.appendChild(m);
-  }
-
-  private async validateAndSelect(wrap: HTMLDivElement) {
+  private async validateAndSelect() {
     if (!this.customUrl) return;
     const tokenInfo = detectToken(this.customUrl);
     if (tokenInfo.required && !this.token) {
@@ -804,12 +844,10 @@ export class StylePicker {
         ok: false,
         text: `${tokenInfo.providerLabel} requires an access token`,
       };
-      this.renderValidateMsg(wrap);
       return;
     }
     this.validating = true;
     this.validateMsg = null;
-    this.updateValidateBtn(wrap);
 
     try {
       const finalUrl =
@@ -828,7 +866,6 @@ export class StylePicker {
       const accessToken = tokenInfo.required ? this.token : undefined;
 
       this.validateMsg = { ok: true, text: "Validated. Loading…" };
-      this.renderValidateMsg(wrap);
       const styleWithToken: CustomStyle = {
         ...resolved.style,
         accessToken,
@@ -853,76 +890,83 @@ export class StylePicker {
         ok: false,
         text: (e as Error).message ?? "Validation failed",
       };
-      this.renderValidateMsg(wrap);
     } finally {
       this.validating = false;
-      this.updateValidateBtn(wrap);
     }
   }
 
   // ─── mbtiles tab ────────────────────────────────────────────────────────
 
-  private renderMbtiles() {
-    const wrap = document.createElement("div");
-    wrap.className = "sp-mbtiles";
-    const isMobile = this.opts.isMobile();
-    wrap.innerHTML = `
-      <p class="sp-prose">
-        Load a local <code>.mbtiles</code> file as the basemap.
-        The map view will fit to the file's bounds.
-      </p>
-      ${
-        isMobile
-          ? `<button class="sp-mbtiles-btn" type="button">Choose .mbtiles file</button>`
-          : `<div class="sp-mbtiles-drop"><div class="sp-mbtiles-drop-title">Drop a .mbtiles file</div><div class="sp-mbtiles-drop-sub">or click to choose</div></div>`
-      }
-      <input type="file" accept=".mbtiles,.sqlite,.sqlite3,.db" class="sp-mbtiles-input" hidden />
-    `;
-    const fileInput = wrap.querySelector<HTMLInputElement>(
-      ".sp-mbtiles-input",
-    )!;
-    fileInput.addEventListener("change", () => {
-      const f = fileInput.files?.[0];
-      if (f) {
-        this.opts.onSelectMbtiles(f);
-        this.close();
-      }
-    });
+  private openFilePicker = () => {
+    this.fileInputRef.value?.click();
+  };
 
-    if (isMobile) {
-      wrap
-        .querySelector<HTMLButtonElement>(".sp-mbtiles-btn")!
-        .addEventListener("click", () => fileInput.click());
-    } else {
-      const drop = wrap.querySelector<HTMLDivElement>(".sp-mbtiles-drop")!;
-      drop.addEventListener("click", () => fileInput.click());
-      drop.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        drop.classList.add("sp-mbtiles-drop-hot");
-      });
-      drop.addEventListener("dragleave", () => {
-        drop.classList.remove("sp-mbtiles-drop-hot");
-      });
-      drop.addEventListener("drop", (e) => {
-        e.preventDefault();
-        drop.classList.remove("sp-mbtiles-drop-hot");
-        const f = e.dataTransfer?.files?.[0];
-        if (f) {
-          this.opts.onSelectMbtiles(f);
-          this.close();
-        }
-      });
+  private onFileInputChange = () => {
+    const f = this.fileInputRef.value?.files?.[0];
+    if (f) {
+      this.opts.onSelectMbtiles(f);
+      this.close();
     }
-    this.bodyEl.appendChild(wrap);
+  };
+
+  private onMbtilesDrop = (e: DragEvent) => {
+    e.preventDefault();
+    this.dropHot = false;
+    const f = e.dataTransfer?.files?.[0];
+    if (f) {
+      this.opts.onSelectMbtiles(f);
+      this.close();
+    }
+  };
+
+  private renderMbtiles(): TemplateResult {
+    const isMobile = this.opts.isMobile();
+    return html`
+      <div class="sp-mbtiles">
+        <p class="sp-prose">
+          Load a local <code>.mbtiles</code> file as the basemap. The map view
+          will fit to the file's bounds.
+        </p>
+        ${isMobile
+          ? html`<button
+              class="sp-mbtiles-btn"
+              type="button"
+              @click=${this.openFilePicker}
+            >
+              Choose .mbtiles file
+            </button>`
+          : html`<div
+              class=${classMap({
+                "sp-mbtiles-drop": true,
+                "sp-mbtiles-drop-hot": this.dropHot,
+              })}
+              @click=${this.openFilePicker}
+              @dragover=${(e: DragEvent) => {
+                e.preventDefault();
+                this.dropHot = true;
+              }}
+              @dragleave=${() => (this.dropHot = false)}
+              @drop=${this.onMbtilesDrop}
+            >
+              <div class="sp-mbtiles-drop-title">Drop a .mbtiles file</div>
+              <div class="sp-mbtiles-drop-sub">or click to choose</div>
+            </div>`}
+        <input
+          type="file"
+          accept=".mbtiles,.sqlite,.sqlite3,.db"
+          class="sp-mbtiles-input"
+          hidden
+          ${ref(this.fileInputRef)}
+          @change=${this.onFileInputChange}
+        />
+      </div>
+    `;
   }
 }
 
-function toggleSet<T>(set: Set<T>, value: T) {
-  if (set.has(value)) set.delete(value);
-  else set.add(value);
+if (!customElements.get("style-picker")) {
+  customElements.define("style-picker", StylePicker);
 }
-
-const STAR_SVG = `<svg class="sp-star" width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><path d="M6 1l1.5 3.2 3.5.4-2.6 2.4.7 3.4L6 8.7 2.9 10.4l.7-3.4L1 4.6l3.5-.4L6 1z" /></svg>`;
 
 interface ResolvedCustom {
   style: CustomStyle;

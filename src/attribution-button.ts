@@ -1,6 +1,15 @@
+import { html, nothing, type TemplateResult } from "lit";
+import { classMap } from "lit/directives/class-map.js";
+import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { LightElement } from "./lit-base.ts";
 import {
+  getRestrictions,
   LICENSE_COLORS,
   LICENSE_LABELS,
+  USAGE_ASPECT_LABELS,
+  USAGE_ASPECTS,
+  VERDICT_COLORS,
+  VERDICT_LABELS,
   type AppStyle,
 } from "./preset-styles.ts";
 
@@ -11,137 +20,173 @@ export interface AttributionButtonOptions {
 
 /** Circular "i" button with a licence-bucket dot. Clicking opens a popover
  *  showing the active style's name, licence pill and attribution HTML. */
-export class AttributionButton {
-  readonly el: HTMLDivElement;
-  private btn: HTMLButtonElement;
-  private dot: HTMLSpanElement;
-  private popoverWrap: HTMLDivElement | null = null;
-  private open = false;
-  private style: AppStyle | null = null;
-  private opts: AttributionButtonOptions;
+export class AttributionButton extends LightElement {
+  static properties = {
+    open: { state: true },
+    currentStyle: { state: true },
+  };
 
-  constructor(opts: AttributionButtonOptions = {}) {
-    this.opts = opts;
+  declare open: boolean;
+  // Not named `style` — that collides with `HTMLElement.prototype.style`.
+  declare currentStyle: AppStyle | null;
 
-    this.el = document.createElement("div");
-    this.el.className = "attrib-root";
+  private opts: AttributionButtonOptions = {};
 
-    this.btn = document.createElement("button");
-    this.btn.className = "attrib-btn";
-    this.btn.setAttribute("aria-label", "Attribution");
-    this.btn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
-        stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-        <circle cx="8" cy="8" r="6.5" />
-        <path d="M8 7.5v3.5" />
-        <circle cx="8" cy="5.2" r=".55" fill="currentColor" stroke="none" />
-      </svg>`;
-    this.dot = document.createElement("span");
-    this.dot.className = "attrib-dot";
-    this.btn.appendChild(this.dot);
-    this.btn.addEventListener("click", () => this.toggle());
-    this.el.appendChild(this.btn);
+  constructor() {
+    super();
+    this.open = false;
+    this.currentStyle = null;
   }
 
-  /** Update the active style — refreshes the dot colour (and the popover if open). */
+  /** Inject runtime options. Custom-element constructors take no arguments. */
+  init(opts: AttributionButtonOptions = {}): this {
+    this.opts = opts;
+    return this;
+  }
+
+  get el(): this {
+    return this;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.classList.add("attrib-root");
+  }
+
+  /** Update the active style — refreshes the dot colour and the popover. */
   setStyle(style: AppStyle) {
-    this.style = style;
-    this.dot.style.background = LICENSE_COLORS[style.license];
-    if (this.open) {
-      this.close();
-      this.show();
-    }
+    this.currentStyle = style;
   }
 
   close() {
     this.open = false;
-    this.btn.classList.remove("attrib-btn-active");
-    this.popoverWrap?.remove();
-    this.popoverWrap = null;
   }
 
   private toggle() {
     if (this.open) {
-      this.close();
+      this.open = false;
     } else {
       this.opts.onOpen?.();
-      this.show();
+      this.open = true;
     }
   }
 
-  private show() {
-    if (!this.style) return;
-    this.open = true;
-    this.btn.classList.add("attrib-btn-active");
+  render() {
+    return html`
+      <button
+        class=${classMap({
+          "attrib-btn": true,
+          "attrib-btn-active": this.open,
+        })}
+        aria-label="Attribution"
+        @click=${() => this.toggle()}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+          stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <circle cx="8" cy="8" r="6.5" />
+          <path d="M8 7.5v3.5" />
+          <circle cx="8" cy="5.2" r=".55" fill="currentColor" stroke="none" />
+        </svg>
+        <span
+          class="attrib-dot"
+          style=${this.currentStyle
+            ? `background:${LICENSE_COLORS[this.currentStyle.license]}`
+            : ""}
+        ></span>
+      </button>
+      ${this.open && this.currentStyle
+        ? this.renderPopover(this.currentStyle)
+        : nothing}
+    `;
+  }
 
-    const s = this.style;
+  private renderPopover(s: AppStyle): TemplateResult {
     const license = s.license;
     const color = LICENSE_COLORS[license];
-
-    this.popoverWrap = document.createElement("div");
-    this.popoverWrap.className = "attrib-popover-wrap";
-    this.popoverWrap.addEventListener("click", () => this.close());
-
-    const popover = document.createElement("div");
-    popover.className = "attrib-popover";
-    popover.addEventListener("click", (e) => e.stopPropagation());
-
-    const header = document.createElement("div");
-    header.className = "attrib-popover-header";
-    const titleWrap = document.createElement("div");
-    titleWrap.className = "attrib-popover-title-wrap";
-    const title = document.createElement("div");
-    title.className = "attrib-popover-title";
-    title.textContent = "Attribution";
-    titleWrap.appendChild(title);
-    const pill = document.createElement("span");
-    pill.className = "attrib-pill";
-    pill.textContent = LICENSE_LABELS[license];
-    pill.style.color = color;
-    pill.style.background = hexAlpha(color, 0.12);
-    titleWrap.appendChild(pill);
-    header.appendChild(titleWrap);
-    const closeBtn = document.createElement("button");
-    closeBtn.className = "attrib-popover-close";
-    closeBtn.setAttribute("aria-label", "Close");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", () => this.close());
-    header.appendChild(closeBtn);
-    popover.appendChild(header);
-
-    const nameEl = document.createElement("div");
-    nameEl.className = "attrib-popover-name";
-    nameEl.textContent = s.name;
-    popover.appendChild(nameEl);
-
-    const box = document.createElement("div");
-    box.className = "attrib-popover-box";
-    // Attribution is curated HTML from our preset/QMS data (or a plain string
-    // for custom URLs) — rendering it lets sources show their logos/links.
-    box.innerHTML = s.attribution || "No attribution provided.";
-    popover.appendChild(box);
-
-    if (s.termsUrl) {
-      const terms = document.createElement("a");
-      terms.className = "attrib-terms";
-      terms.href = s.termsUrl;
-      terms.target = "_blank";
-      terms.rel = "noopener noreferrer";
-      terms.textContent = "Terms of use ↗";
-      popover.appendChild(terms);
-    }
-
-    if (license === "attribution" || license === "restrictive") {
-      const footer = document.createElement("div");
-      footer.className = "attrib-popover-footer";
-      footer.textContent =
-        "When downloading, you'll need to acknowledge this source's terms before continuing.";
-      popover.appendChild(footer);
-    }
-
-    this.popoverWrap.appendChild(popover);
-    this.el.appendChild(this.popoverWrap);
+    return html`
+      <div class="attrib-popover-wrap" @click=${() => this.close()}>
+        <div
+          class="attrib-popover"
+          @click=${(e: Event) => e.stopPropagation()}
+        >
+          <div class="attrib-popover-header">
+            <div class="attrib-popover-title-wrap">
+              <div class="attrib-popover-title">Attribution</div>
+              <span
+                class="attrib-pill"
+                style="color:${color};background:${hexAlpha(color, 0.12)}"
+                >${LICENSE_LABELS[license]}</span
+              >
+            </div>
+            <button
+              class="attrib-popover-close"
+              aria-label="Close"
+              @click=${() => this.close()}
+            >×</button>
+          </div>
+          <div class="attrib-popover-name">${s.name}</div>
+          <!-- Attribution is curated HTML from our preset/QMS data (or a plain
+               string for custom URLs) — render it so sources can show
+               their logos/links. -->
+          <div class="attrib-popover-box">
+            ${unsafeHTML(s.attribution || "No attribution provided.")}
+          </div>
+          ${this.renderUsage(s)}
+          ${s.termsUrl
+            ? html`<a
+                class="attrib-terms"
+                href=${s.termsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                >Terms of use ↗</a
+              >`
+            : nothing}
+          ${license === "attribution" || license === "restrictive"
+            ? html`<div class="attrib-popover-footer">
+                When downloading, you'll need to acknowledge this source's terms
+                before continuing.
+              </div>`
+            : nothing}
+        </div>
+      </div>
+    `;
   }
+
+  /** Per-aspect usage restrictions — offline download, commercial use and
+   *  redistribution — with a colour-coded verdict for each. */
+  private renderUsage(s: AppStyle): TemplateResult {
+    const r = getRestrictions(s);
+    return html`
+      <div class="attrib-usage">
+        <div class="attrib-usage-title">Usage</div>
+        ${USAGE_ASPECTS.map((aspect) => {
+          const item = r[aspect];
+          const color = VERDICT_COLORS[item.verdict];
+          return html`
+            <div class="attrib-usage-row">
+              <div class="attrib-usage-head">
+                <span
+                  class="attrib-usage-dot"
+                  style="background:${color}"
+                ></span>
+                <span class="attrib-usage-label"
+                  >${USAGE_ASPECT_LABELS[aspect]}</span
+                >
+                <span class="attrib-usage-verdict" style="color:${color}"
+                  >${VERDICT_LABELS[item.verdict]}</span
+                >
+              </div>
+              <div class="attrib-usage-note">${item.note}</div>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+}
+
+if (!customElements.get("attribution-button")) {
+  customElements.define("attribution-button", AttributionButton);
 }
 
 /** `#rrggbb` + alpha → `rgba(...)`. */
